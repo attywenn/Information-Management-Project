@@ -1,12 +1,11 @@
 import React from "react";
+import Homepage from "./pages/homepage.jsx"
 import { useState } from "react";
 
-function App () {
+function App() {
   return (
     <>
-      <div>
-        <h1>Nigga</h1>
-      </div>
+      <Homepage />
     </>
   );
 }
