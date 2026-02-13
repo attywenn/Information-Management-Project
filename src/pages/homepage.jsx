@@ -22,10 +22,12 @@ function homepage() {
               serviceName="e-Brgy Clearance"
               description="Para kumuha ng e-Brgy clearance certificate, pindutin dito."
             />
-            <Cards
-              serviceName="e-Sedula"
-              description="Para kumuha ng soft copy ng barangay sedula, pindutin dito."
-            />
+            <a href="https://www.facebook.com/herrerawency" target="_blank">
+              <Cards
+                serviceName="e-Sedula"
+                description="Para kumuha ng soft copy ng barangay sedula, pindutin dito."
+              />
+            </a>
           </div>
         </div>
       </div>
