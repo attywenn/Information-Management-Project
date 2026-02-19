@@ -1,6 +1,3 @@
-import Navigation from "../components/Navigation.jsx";
-import Header from "../components/Header.jsx";
-
 // USER LANDING PAGE //
 
 function Contributors () {
@@ -20,17 +17,7 @@ function Contributors () {
 function Homepage() {
   return (
     <>
-      <div className="flex flex-col">
-        <Header /> {/* Header content */}
-        
-        {/* body contents */}
-
-        <div className="m-2">
-          
-          <Navigation /> {/* Menu Bar */}
-          <Contributors />
-        </div>
-      </div>
+      <Contributors />
     </>
   );
 }
