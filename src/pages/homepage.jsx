@@ -1,38 +1,38 @@
-import React from "react";
+import Navigation from "../components/Navigation.jsx";
 import Header from "../components/Header.jsx";
-import Cards from "../components/Cards.jsx";
 
-function homepage() {
+// USER LANDING PAGE //
+
+function Contributors () {
   return (
     <>
-      <div className="flex-column">
-        <Header />
-        <div className="m-[3em] flex-column">
-          <div className="font-bold text-[3rem]">
-            WELCOME TO <span className="text-blue-500">BARANGAY SILANGAN</span>{" "}
-            E-GOV SERVICES
-          </div>
-
-          <div className="text-[1.5rem]">
-            Serbisyong pang-barangay? Mas pinadali na, hindi na kailangan ng
-            pila!
-          </div>
-          <div className="grid grid-cols-2 gap-1 max-w-[40em] lg:grid-cols-4 lg:max-w-[50em]">
-            <Cards
-              serviceName="e-Brgy Clearance"
-              description="Para kumuha ng e-Brgy clearance certificate, pindutin dito."
-            />
-            <a href="https://www.facebook.com/herrerawency" target="_blank">
-              <Cards
-                serviceName="e-Sedula"
-                description="Para kumuha ng soft copy ng barangay sedula, pindutin dito."
-              />
-            </a>
-          </div>
+      <div className="flex justify-center items-center mt-[3rem] font-[roboto] md:grid md:grid-cols-2">
+        <div className="-space-y-3 font-bold">
+          <div className="text-[1rem]">WELCOME TO</div>
+          <div className="text-[1.5rem] text-red-950">BARANGAY SAN PERFECTO</div>
+          <div className="text-[1.3rem] italic">Health Center</div>
         </div>
       </div>
     </>
   );
 }
 
-export default homepage;
+function Homepage() {
+  return (
+    <>
+      <div className="flex flex-col">
+        <Header /> {/* Header content */}
+        
+        {/* body contents */}
+
+        <div className="m-2">
+          
+          <Navigation /> {/* Menu Bar */}
+          <Contributors />
+        </div>
+      </div>
+    </>
+  );
+}
+
+export default Homepage;
