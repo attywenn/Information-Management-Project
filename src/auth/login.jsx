@@ -1,12 +1,12 @@
 function Login() {
   return (
-    <div className="flex flex-col items-center justify-center mt-8 font-[roboto] text-center bg-white border border-red-950 p-6 rounded-lg shadow-md w-full max-w-sm md:bg-white md:border-none md:">
+    <div className="flex flex-col items-center justify-center mt-8 font-[roboto] text-center bg-white border border-red-950 p-6 rounded-lg w-full max-w-sm md:bg-white/5 md:border-none md:">
       <h1 className="text-2xl font-bold mb-4 text-black">Login as Patient</h1>
       <p className="mt-1 text-center max-w-[20rem] font-bold text-black/70">
-          Login with your credentials given by the Barangay Health Center System
-          administrator.
-        </p>
-      
+        Login with your credentials given by the Barangay Health Center System
+        administrator.
+      </p>
+
       <form className="flex flex-col items-center mt-2">
         <label htmlFor="accountId" className="font-bold">
           Account ID
@@ -44,8 +44,11 @@ function Login() {
         </button>
 
         <p className="text-black/80 mt-5 text-center max-w-[20rem]">
-          No account? <span className="text-black font-bold">Go to Barangay San Perfecto Health Center or click
-          "Contact Us" on the Menu bar</span>
+          No account?{" "}
+          <span className="text-black font-bold">
+            Go to Barangay San Perfecto Health Center or click "Contact Us" on
+            the Menu bar
+          </span>
         </p>
       </form>
     </div>
@@ -53,3 +56,4 @@ function Login() {
 }
 
 export default Login;
+

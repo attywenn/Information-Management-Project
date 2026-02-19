@@ -1,6 +1,6 @@
 // USER LANDING PAGE //
 
-function Contributors () {
+function Welcome () {
   return (
     <>
       <div className="flex justify-center items-center mt-[3rem] font-[roboto] md:grid md:grid-cols-2">
@@ -17,7 +17,7 @@ function Contributors () {
 function Homepage() {
   return (
     <>
-      <Contributors />
+      <Welcome />
     </>
   );
 }
