@@ -1,12 +1,20 @@
-function register () {
+function Register ({ setIsRegisteringState }) {
     return (
         <>
-            <div>
-                Hello! This is the register page. You can register for an account here.
+            <div className="flex-column justify-center text-center align-center" >
+                <div>Account Registration</div>
+
+
+
+
+
+
+                <button onClick={() => setIsRegisteringState(true)} className="mt-4 text-red-950 font-bold underline">
+                    Back to Login
+                </button>
             </div>
-        
         </>
     )
 }
 
-export default register;
+export default Register;

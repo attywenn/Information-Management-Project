@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 
 import Login from "../auth/login";
+import Register from "../auth/register";
 import SJC from "../assets/images/bgy.png";
 
 function Image() {
@@ -15,9 +16,14 @@ function Image() {
   );
 }
 
-function Account() {
+function Account({ isRegistering }) {
   const [showLogin, setShowLogin] = useState(false);
 
+  const [isRegisteringState, setIsRegisteringState] = useState(true);
+
+  if (isRegistering) {
+    setIsRegisteringState(true);
+  }
   useEffect(() => {
     const timer = setTimeout(() => {
       setShowLogin(true);
@@ -48,7 +54,7 @@ function Account() {
           </div>
 
           <div className="flex items-center justify-center bg-white px-4 py-8 sm:px-8">
-            <Login />
+            {isRegisteringState ? <Login setIsRegisteringState={setIsRegisteringState} /> : <Register setIsRegisteringState={setIsRegisteringState} /> }
           </div>
         </div>
       </div>

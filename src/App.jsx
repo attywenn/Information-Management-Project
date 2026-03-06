@@ -1,4 +1,5 @@
 import React from "react";
+import { useState } from "react";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Homepage from "./pages/homepage.jsx";
 import Account from "./pages/Account.jsx";
@@ -6,9 +7,9 @@ import Contact from "./pages/Contact.jsx";
 import FAQs from "./pages/FAQs.jsx";
 import Header from "./components/Header.jsx";
 import Navigation from "./components/Navigation.jsx";
-import AuthenticationRoutes from "./auth/AuthenticantionRoutes.jsx";
+import Login from "./auth/login.jsx"
 
-function App() {
+function Landing() {
   return (
     <BrowserRouter>
       <div className="flex flex-col">
@@ -20,11 +21,33 @@ function App() {
             <Route path="/account" element={<Account />} />
             <Route path="/contact" element={<Contact />} />
             <Route path="/faqs" element={<FAQs />} />
-            <Route path="/*" element={<AuthenticationRoutes />} />
           </Routes>
         </div>
       </div>
     </BrowserRouter>
+  );
+}
+
+function Dashboard() {
+  
+  return (
+    <>
+    </>
+  );
+}
+
+function App () {
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+  return (
+    <>
+      {isLoggedIn ? (
+        <Dashboard />
+      ) : (
+        <Landing /> 
+      )}
+    
+    </>
   );
 }
 

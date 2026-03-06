@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 
-function Login() {
+function Login({ setIsRegisteringState }) {
   const navigate = useNavigate();
   const [accountId, setAccountId] = useState("");
   const [password, setPassword] = useState("");
   const [dob, setDob] = useState("");  
+  const [IsLoggedIn, setIsLoggedInState] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -26,7 +27,7 @@ function Login() {
     if (data.success) {
       alert("Login successful!");
       // Redirect to dashboard or another page
-      navigate("/homepage");
+      setIsLoggedIn(true);
     } else {
       alert(`Login failed: ${data.message}`);
     }
@@ -83,18 +84,17 @@ function Login() {
           Login
         </button>
 
+      </form>
         <p className="text-black/80 mt-5 text-center max-w-[20rem]">
           No account?{" "}
           <span className="text-black font-bold">
-            <NavLink to="/register" className="underline">
+            <button onClick={() => setIsRegisteringState(false)} className="underline">
               Register here
-            </NavLink>
+            </button>
           </span>
         </p>
-      </form>
     </div>
   );
 }
 
 export default Login;
-
