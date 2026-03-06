@@ -6,6 +6,7 @@ import Contact from "./pages/Contact.jsx";
 import FAQs from "./pages/FAQs.jsx";
 import Header from "./components/Header.jsx";
 import Navigation from "./components/Navigation.jsx";
+import AuthenticationRoutes from "./auth/AuthenticantionRoutes.jsx";
 
 function App() {
   return (
@@ -15,10 +16,11 @@ function App() {
         <div className="m-2">
           <Navigation />
           <Routes>
-            <Route path="/" element={<Homepage />} />
+            <Route path="/homepage" element={<Homepage />} />
             <Route path="/account" element={<Account />} />
             <Route path="/contact" element={<Contact />} />
             <Route path="/faqs" element={<FAQs />} />
+            <Route path="/*" element={<AuthenticationRoutes />} />
           </Routes>
         </div>
       </div>
