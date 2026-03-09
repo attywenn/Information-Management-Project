@@ -1,37 +1,48 @@
 import { useState } from "react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../context/AuthContext.jsx";
 
 function Login({ setIsRegisteringState }) {
   const navigate = useNavigate();
-  const [accountId, setAccountId] = useState("");
+  const { login } = useAuth();
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [dob, setDob] = useState("");  
-  const [IsLoggedIn, setIsLoggedInState] = useState(false);
+  const [dob, setDob] = useState("");
+  const [role, setRole] = useState("patient");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState("");
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setError("");
+    setIsSubmitting(true);
 
-    const response = await fetch("http://localhost:3000/login", {
-      method: "POST",
-      headers: {
-        "Content-Type" : "application/json",
-      },
-      body : JSON.stringify({
-        accountId,
-        password,
-        dob
-      }),
-    });
+    try {
+      const response = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ username, password, dob, role }),
+      });
 
-    const data = await response.json();
-    if (data.success) {
-      alert("Login successful!");
-      // Redirect to dashboard or another page
-      setIsLoggedIn(true);
-    } else {
-      alert(`Login failed: ${data.message}`);
+      const data = await response.json();
+
+      if (data.success) {
+        // Backend responds with { success, message, user: { username, role }, token }
+        login({
+          username: data.user?.username,
+          role: data.user?.role,
+          token: data.token,
+        });
+        navigate("/dashboard", { replace: true });
+      } else {
+        setError(data.message || "Login failed");
+      }
+    } catch (err) {
+      setError(err.message || "Network error. Is the backend running?");
+    } finally {
+      setIsSubmitting(false);
     }
-
   };
 
   return (
@@ -43,16 +54,19 @@ function Login({ setIsRegisteringState }) {
       </p>
 
       <form className="flex flex-col items-center mt-2" onSubmit={handleSubmit}>
-        <label htmlFor="accountId" className="font-bold">
-          Account ID
+        {error && (
+          <p className="mb-2 text-sm text-red-600 font-medium">{error}</p>
+        )}
+        <label htmlFor="username" className="font-bold">
+          Username
         </label>
         <input
-          id="accountId"
+          id="username"
           type="text"
-          placeholder="Account ID"
+          placeholder="Username"
           className="mb-2 p-2 border border-red-950 rounded"
-          value={accountId}
-          onChange={(e) => setAccountId(e.target.value)}
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
         />
 
         <label htmlFor="password" className="font-bold">
@@ -77,11 +91,25 @@ function Login({ setIsRegisteringState }) {
           value={dob}
           onChange={(e) => setDob(e.target.value)}
         />
+        <label htmlFor="role" className="font-bold">
+          Role
+        </label>
+        <select
+          id="role"
+          className="mb-4 p-2 border border-red-950 rounded w-full"
+          value={role}
+          onChange={(e) => setRole(e.target.value)}
+        >
+          <option value="patient">Patient</option>
+          <option value="health_worker">Health Worker</option>
+          <option value="admin">Admin</option>
+        </select>
         <button
           type="submit"
-          className="font-bold bg-red-950 text-white px-4 py-2 rounded hover:bg-red-800"
+          disabled={isSubmitting}
+          className="font-bold bg-red-950 text-white px-4 py-2 rounded hover:bg-red-800 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Login
+          {isSubmitting ? "Logging in..." : "Login"}
         </button>
 
       </form>
