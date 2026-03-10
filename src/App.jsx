@@ -44,6 +44,7 @@ function AppContent() {
         "/faqs-dashboard",
         "/inbox",
         "/settings",
+        "/manage-accounts",
       ].map((path) => (
         <Route
           key={path}

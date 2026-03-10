@@ -2,7 +2,7 @@ import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
 
 function DashboardNavigation() {
-    const { logout } = useAuth();
+    const { logout, user } = useAuth();
     const navigate = useNavigate();
 
     const tabs = [
@@ -15,6 +15,10 @@ function DashboardNavigation() {
         { label: "Settings", path: "/settings" },
     ];
 
+    if (user?.role === "admin") {
+        tabs.splice(3, 0, { label: "Manage Accounts", path: "/manage-accounts" });
+    }
+
     return (
         <aside className="w-64 min-h-screen bg-red-950 text-white flex flex-col justify-between border-r border-white/10">
             <div className="p-6">
@@ -22,7 +26,7 @@ function DashboardNavigation() {
                     San Perfecto HC
                 </div>
                 <div className="text-lg font-semibold leading-snug">
-                    Patient Portal
+                    E-HEALTH CENTER
                 </div>
             </div>
 

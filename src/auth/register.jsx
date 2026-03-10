@@ -10,7 +10,8 @@ function Register({ setIsRegisteringState }) {
     const [dob, setDob] = useState("");
     const [address, setAddress] = useState("");
     const [contactNumber, setContactNumber] = useState("");
-    const [profileImage, setProfileImage] = useState("");
+    const [profileImage, setProfileImage] = useState(null);
+    const [identityImage, setIdentityImage] = useState(null);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState("");
     const [success, setSuccess] = useState("");
@@ -28,20 +29,22 @@ function Register({ setIsRegisteringState }) {
         setIsSubmitting(true);
 
         try {
+            const formData = new FormData();
+            formData.append("username", username);
+            formData.append("password", password);
+            formData.append("surname", surname);
+            formData.append("firstname", firstname);
+            formData.append("middlename", middlename);
+            formData.append("dob", dob);
+            formData.append("address", address);
+            formData.append("contactNumber", contactNumber);
+
+            if (profileImage) formData.append("profileImage", profileImage);
+            if (identityImage) formData.append("identityImage", identityImage);
+
             const response = await fetch("/api/register/patient", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    username,
-                    password,
-                    surname,
-                    firstname,
-                    middlename,
-                    dob,
-                    address,
-                    contactNumber,
-                    profileImage,
-                }),
+                body: formData,
             });
 
             const data = await response.json();
@@ -57,7 +60,8 @@ function Register({ setIsRegisteringState }) {
                 setDob("");
                 setAddress("");
                 setContactNumber("");
-                setProfileImage("");
+                setProfileImage(null);
+                setIdentityImage(null);
                 // Optionally switch back to login after a short delay
                 setTimeout(() => setIsRegisteringState(true), 1500);
             } else {
@@ -200,15 +204,25 @@ function Register({ setIsRegisteringState }) {
                 />
 
                 <label className="font-bold" htmlFor="reg-profile-image">
-                    Profile image (URL or filename)
+                    Profile image (optional)
                 </label>
                 <input
                     id="reg-profile-image"
-                    type="text"
+                    type="file"
+                    accept="image/*"
+                    className="p-2 border border-red-950 rounded"
+                    onChange={(e) => setProfileImage(e.target.files?.[0] || null)}
+                />
+
+                <label className="font-bold" htmlFor="reg-identity-image">
+                    Proof of identity (photo) (optional for now)
+                </label>
+                <input
+                    id="reg-identity-image"
+                    type="file"
+                    accept="image/*"
                     className="p-2 border border-red-950 rounded mb-2"
-                    value={profileImage}
-                    onChange={(e) => setProfileImage(e.target.value)}
-                    placeholder="Upload separately and paste path, or enter filename"
+                    onChange={(e) => setIdentityImage(e.target.files?.[0] || null)}
                 />
 
                 <button
