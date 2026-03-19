@@ -41,7 +41,6 @@ export function AuthProvider({ children }) {
         setToken(parsed.token);
       }
     } catch {
-      // If anything goes wrong, clear invalid auth data
       window.localStorage.removeItem("auth");
     }
   }, []);

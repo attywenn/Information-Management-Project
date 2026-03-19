@@ -211,8 +211,8 @@ function UserDashboard() {
 
     const renderDashboardHome = () => {
         if (!user) return null;
-        if (user.role === "admin") {
-            return (
+        if (user.role === "admin") {    
+            return (    
                 <div className="space-y-6">
                     <div>
                         <h1 className="text-2xl font-semibold mb-1">

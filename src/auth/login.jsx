@@ -113,11 +113,11 @@ function Login({ setIsRegisteringState }) {
         {role === "admin" && (
           <>
             <label htmlFor="admin-q1" className="font-bold">
-              Admin security (4-digit PIN)
+              Admin security 1
             </label>
             <input
               id="admin-q1"
-              type="text"
+              type="password"
               inputMode="numeric"
               className="mb-2 p-2 border border-red-950 rounded"
               value={adminQ1}
@@ -126,11 +126,11 @@ function Login({ setIsRegisteringState }) {
             />
 
             <label htmlFor="admin-q2" className="font-bold">
-              Admin security (6-char code)
+              Admin security 2
             </label>
             <input
               id="admin-q2"
-              type="text"
+              type="password"
               className="mb-2 p-2 border border-red-950 rounded"
               value={adminQ2}
               onChange={(e) => setAdminQ2(e.target.value)}
@@ -138,11 +138,11 @@ function Login({ setIsRegisteringState }) {
             />
 
             <label htmlFor="admin-q3" className="font-bold">
-              Admin security (keyword)
+              Admin security 3
             </label>
             <input
               id="admin-q3"
-              type="text"
+              type="password"
               className="mb-4 p-2 border border-red-950 rounded"
               value={adminQ3}
               onChange={(e) => setAdminQ3(e.target.value)}
