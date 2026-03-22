@@ -11,6 +11,9 @@
     "test": "echo \"No tests yet\""
   },
   "dependencies": {
+    "@fortawesome/free-regular-svg-icons": "^7.2.0",
+    "@fortawesome/free-solid-svg-icons": "^7.2.0",
+    "@fortawesome/react-fontawesome": "^3.3.0",
     "@tailwindcss/vite": "^4.1.18",
     "chart.js": "^4.5.1",
     "react": "^19.2.0",

@@ -4,6 +4,8 @@ import DashboardNavigation from "../components/dashboardNavigation.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { Pie } from "react-chartjs-2";
 import { Chart as ChartJS, ArcElement, Tooltip, Legend } from "chart.js";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { faTriangleExclamation, faCalendarDays, faFileMedical } from "@fortawesome/free-solid-svg-icons";
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
@@ -246,12 +248,16 @@ function UserDashboard() {
                 </p>
                 <div className="mt-8 grid gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
                     <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                        <div className="text-3xl mb-3">📅</div>
+                        <div className="mb-4 w-11 h-11 rounded-xl bg-red-50 flex items-center justify-center">
+                            <FontAwesomeIcon icon={faCalendarDays} className="w-5 h-5 text-brand-red" />
+                        </div>
                         <h3 className="font-bold text-lg text-slate-800">My Appointments</h3>
                         <p className="text-sm text-slate-500 mt-1">You have no upcoming appointments.</p>
                     </div>
                     <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-                        <div className="text-3xl mb-3">📋</div>
+                        <div className="mb-4 w-11 h-11 rounded-xl bg-red-50 flex items-center justify-center">
+                            <FontAwesomeIcon icon={faFileMedical} className="w-5 h-5 text-brand-red" />
+                        </div>
                         <h3 className="font-bold text-lg text-slate-800">Medical Records</h3>
                         <p className="text-sm text-slate-500 mt-1">View your consultation history.</p>
                     </div>
@@ -405,7 +411,7 @@ function UserDashboard() {
         if (user?.role !== "admin") {
             return (
                 <div className="bg-red-50 text-red-600 p-4 rounded-xl border border-red-100 flex items-center gap-3">
-                    <span className="text-xl">⚠️</span>
+                    <FontAwesomeIcon icon={faTriangleExclamation} className="w-5 h-5 shrink-0" />
                     <p className="font-medium">You do not have permission to manage accounts.</p>
                 </div>
             );

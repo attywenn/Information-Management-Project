@@ -1,22 +1,34 @@
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import {
+    faChartPie,
+    faUser,
+    faCalendarDays,
+    faPhone,
+    faCircleQuestion,
+    faInbox,
+    faGear,
+    faUsers,
+    faRightFromBracket,
+} from "@fortawesome/free-solid-svg-icons";
 
 function DashboardNavigation() {
     const { logout, user } = useAuth();
     const navigate = useNavigate();
 
     const tabs = [
-        { label: "Dashboard", path: "/dashboard", icon: "📊" },
-        { label: "Profile", path: "/profile", icon: "👤" },
-        { label: "Schedules", path: "/schedules", icon: "📅" },
-        { label: "Contact us", path: "/contact-us", icon: "📞" },
-        { label: "FAQs", path: "/faqs-dashboard", icon: "❓" },
-        { label: "Inbox", path: "/inbox", icon: "📥" },
-        { label: "Settings", path: "/settings", icon: "⚙️" },
+        { label: "Dashboard", path: "/dashboard", icon: faChartPie },
+        { label: "Profile", path: "/profile", icon: faUser },
+        { label: "Schedules", path: "/schedules", icon: faCalendarDays },
+        { label: "Contact us", path: "/contact-us", icon: faPhone },
+        { label: "FAQs", path: "/faqs-dashboard", icon: faCircleQuestion },
+        { label: "Inbox", path: "/inbox", icon: faInbox },
+        { label: "Settings", path: "/settings", icon: faGear },
     ];
 
     if (user?.role === "admin") {
-        tabs.splice(3, 0, { label: "Manage Accounts", path: "/manage-accounts", icon: "👥" });
+        tabs.splice(3, 0, { label: "Manage Accounts", path: "/manage-accounts", icon: faUsers });
     }
 
     return (
@@ -53,7 +65,7 @@ function DashboardNavigation() {
                             }`
                         }
                     >
-                        <span className="text-lg opacity-80">{icon}</span>
+                        <FontAwesomeIcon icon={icon} className="w-4 h-4 opacity-90" />
                         <span className="truncate">{label}</span>
                     </NavLink>
                 ))}
@@ -68,7 +80,8 @@ function DashboardNavigation() {
                     }}
                     className="w-full flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition-all hover:bg-slate-50 hover:text-brand-red hover:border-red-200 active:scale-95 shadow-sm"
                 >
-                    <span className="text-lg">🚪</span> Log out
+                    <FontAwesomeIcon icon={faRightFromBracket} className="w-4 h-4" />
+                    Log out
                 </button>
             </div>
         </aside>

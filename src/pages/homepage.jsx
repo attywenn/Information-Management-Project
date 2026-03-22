@@ -1,5 +1,7 @@
 import homepageImage from "../assets/images/hpageimg.jpg";
 import { Link } from "react-router-dom";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { faStethoscope, faFileMedical, faHouseChimneyMedical } from "@fortawesome/free-solid-svg-icons";
 
 function Homepage() {
   return (
@@ -48,21 +50,23 @@ function Homepage() {
           {
             title: "Online Consultations",
             desc: "Book and manage your appointments with our doctors easily from home.",
-            icon: "🩺"
+            icon: faStethoscope
           },
           {
             title: "Health Records",
             desc: "Securely access your medical history and prescription records anytime.",
-            icon: "📋"
+            icon: faFileMedical
           },
           {
             title: "Community Program",
             desc: "Stay updated on vaccination drives and barangay health initiatives.",
-            icon: "🏘️"
+            icon: faHouseChimneyMedical
           }
         ].map((item, i) => (
           <div key={i} className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
-            <div className="text-4xl mb-4">{item.icon}</div>
+            <div className="mb-4 w-12 h-12 rounded-xl bg-red-50 flex items-center justify-center">
+              <FontAwesomeIcon icon={item.icon} className="w-6 h-6 text-brand-red" />
+            </div>
             <h3 className="text-xl font-bold text-slate-900 mb-2">{item.title}</h3>
             <p className="text-slate-600 leading-relaxed">{item.desc}</p>
           </div>
