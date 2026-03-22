@@ -37,7 +37,7 @@ function Account({ isRegistering }) {
         {/* Left Side: Image/Info Banner */}
         <div className="relative hidden md:block md:w-5/12">
           {showLogin && <Image />}
-          <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-900 via-slate-900/50 to-transparent" />
+          <div className="pointer-events-none absolute inset-0 bg-linear-to-t from-slate-900 via-slate-900/50 to-transparent" />
           <div className="absolute inset-x-0 bottom-0 p-8 space-y-2 text-white">
             <p className="text-xs font-bold tracking-widest text-brand-red uppercase">
               Patient Portal
