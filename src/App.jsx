@@ -11,10 +11,10 @@ import UserDashboard from "./dashboard/userDashboard.jsx";
 
 function Landing() {
   return (
-    <div className="flex flex-col">
+    <div className="flex flex-col min-h-screen bg-slate-50">
       <Header />
-      <div className="m-2">
-        <Navigation />
+      <Navigation />
+      <main className="flex-1 w-full mx-auto max-w-6xl p-4 sm:p-6 lg:p-8">
         <Routes>
           <Route path="/" element={<Homepage />} />
           <Route path="/account" element={<Account />} />
@@ -22,7 +22,7 @@ function Landing() {
           <Route path="/faqs" element={<FAQs />} />
           <Route path="*" element={<Homepage />} />
         </Routes>
-      </div>
+      </main>
     </div>
   );
 }

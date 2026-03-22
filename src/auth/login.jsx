@@ -21,165 +21,157 @@ function Login({ setIsRegisteringState }) {
     setIsSubmitting(true);
 
     try {
-      const response = await fetch("/api/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          username,
-          password,
-          dob: role === "patient" ? dob : undefined,
-          role,
-          q1: role === "admin" ? adminQ1 : undefined,
-          q2: role === "admin" ? adminQ2 : undefined,
-          q3: role === "admin" ? adminQ3 : undefined,
-        }),
+      // Frontend-only mode: simulate a short login delay without backend calls.
+      await new Promise((resolve) => setTimeout(resolve, 350));
+
+      login({
+        username,
+        role,
+        token: "frontend-only-session",
       });
-
-      const data = await response.json();
-
-      if (data.success) {
-        // Backend responds with { success, message, user: { username, role }, token }
-        login({
-          username: data.user?.username,
-          role: data.user?.role,
-          token: data.token,
-        });
-        navigate("/dashboard", { replace: true });
-      } else {
-        setError(data.message || "Login failed");
-      }
-    } catch (err) {
-      setError(err.message || "Network error. Is the backend running?");
+      navigate("/dashboard", { replace: true });
+    } catch {
+      setError("Unable to sign in. Please try again.");
     } finally {
       setIsSubmitting(false);
     }
   };
 
   return (
-    <div className="flex flex-col items-center justify-center mt-8 font-[roboto] text-center bg-white border border-red-950 p-6 rounded-lg w-full max-w-sm md:bg-white/5 md:border-none">
-      <h1 className="text-2xl font-bold mb-4 text-black">Login</h1>
-      <p className="mt-1 text-center max-w-[20rem] font-bold text-black/70">
-        Login with your credentials provided by the Barangay Health Center System
-        administrator.
+    <div className="flex flex-col w-full">
+      <h1 className="text-2xl font-bold text-slate-900 mb-2">Welcome Back</h1>
+      <p className="text-slate-600 mb-6 leading-relaxed">
+        Sign in with your credentials to access the portal.
       </p>
 
-      <form className="flex flex-col items-center mt-2" onSubmit={handleSubmit}>
+      <form className="flex flex-col space-y-4" onSubmit={handleSubmit}>
         {error && (
-          <p className="mb-2 text-sm text-red-600 font-medium">{error}</p>
+          <div className="bg-red-50 text-red-600 p-3 rounded-lg text-sm font-medium border border-red-100">
+            {error}
+          </div>
         )}
-        <label htmlFor="username" className="font-bold">
-          Username {role === "admin" ? "or Email" : ""}
-        </label>
-        <input
-          id="username"
-          type="text"
-          placeholder={role === "admin" ? "Username or Email" : "Username"}
-          className="mb-2 p-2 border border-red-950 rounded"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          required
-        />
 
-        <label htmlFor="password" className="font-bold">
-          Password
-        </label>
-        <input
-          id="password"
-          type="password"
-          placeholder="Password"
-          className="mb-4 p-2 border border-red-950 rounded"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          required
-        />
+        {/* Role Selector */}
+        <div className="space-y-1.5">
+          <label htmlFor="role" className="text-sm font-semibold text-slate-700">
+            Account Type
+          </label>
+          <select
+            id="role"
+            className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red transition-all"
+            value={role}
+            onChange={(e) => setRole(e.target.value)}
+          >
+            <option value="patient">Patient</option>
+            <option value="health_worker">Health Worker</option>
+            <option value="admin">Administrator</option>
+          </select>
+        </div>
+
+        <div className="space-y-1.5">
+          <label htmlFor="username" className="text-sm font-semibold text-slate-700">
+            {role === "admin" ? "Username or Email" : "Username"}
+          </label>
+          <input
+            id="username"
+            type="text"
+            placeholder={role === "admin" ? "admin@sanperfecto.gov.ph" : "Enter your username"}
+            className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red transition-all"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            required
+          />
+        </div>
+
+        <div className="space-y-1.5">
+          <label htmlFor="password" className="text-sm font-semibold text-slate-700">
+            Password
+          </label>
+          <input
+            id="password"
+            type="password"
+            placeholder="Enter your password"
+            className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red transition-all"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
+        </div>
 
         {role === "patient" && (
-          <>
-            <label htmlFor="dob" className="font-bold ">
+          <div className="space-y-1.5">
+            <label htmlFor="dob" className="text-sm font-semibold text-slate-700">
               Birthdate
             </label>
             <input
               type="date"
               id="dob"
-              className="mb-4 p-2 border border-red-950 rounded"
+              className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red transition-all"
               value={dob}
               onChange={(e) => setDob(e.target.value)}
               required
             />
-          </>
+          </div>
         )}
 
         {role === "admin" && (
-          <>
-            <label htmlFor="admin-q1" className="font-bold">
-              Admin security 1
-            </label>
-            <input
-              id="admin-q1"
-              type="password"
-              inputMode="numeric"
-              className="mb-2 p-2 border border-red-950 rounded"
-              value={adminQ1}
-              onChange={(e) => setAdminQ1(e.target.value)}
-              required
-            />
-
-            <label htmlFor="admin-q2" className="font-bold">
-              Admin security 2
-            </label>
-            <input
-              id="admin-q2"
-              type="password"
-              className="mb-2 p-2 border border-red-950 rounded"
-              value={adminQ2}
-              onChange={(e) => setAdminQ2(e.target.value)}
-              required
-            />
-
-            <label htmlFor="admin-q3" className="font-bold">
-              Admin security 3
-            </label>
-            <input
-              id="admin-q3"
-              type="password"
-              className="mb-4 p-2 border border-red-950 rounded"
-              value={adminQ3}
-              onChange={(e) => setAdminQ3(e.target.value)}
-              required
-            />
-          </>
+          <div className="space-y-4 p-4 mt-2 bg-slate-50 rounded-lg border border-slate-200">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Admin Security Verification</p>
+            <div className="space-y-1.5">
+              <input
+                id="admin-q1"
+                type="password"
+                inputMode="numeric"
+                placeholder="Security Pin 1"
+                className="w-full p-2 border border-slate-300 rounded focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red"
+                value={adminQ1}
+                onChange={(e) => setAdminQ1(e.target.value)}
+                required
+              />
+            </div>
+            <div className="space-y-1.5">
+              <input
+                id="admin-q2"
+                type="password"
+                placeholder="Security Pin 2"
+                className="w-full p-2 border border-slate-300 rounded focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red"
+                value={adminQ2}
+                onChange={(e) => setAdminQ2(e.target.value)}
+                required
+              />
+            </div>
+            <div className="space-y-1.5">
+              <input
+                id="admin-q3"
+                type="password"
+                placeholder="Security Pin 3"
+                className="w-full p-2 border border-slate-300 rounded focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red"
+                value={adminQ3}
+                onChange={(e) => setAdminQ3(e.target.value)}
+                required
+              />
+            </div>
+          </div>
         )}
-        <label htmlFor="role" className="font-bold">
-          Role
-        </label>
-        <select
-          id="role"
-          className="mb-4 p-2 border border-red-950 rounded w-full"
-          value={role}
-          onChange={(e) => setRole(e.target.value)}
-        >
-          <option value="patient">Patient</option>
-          <option value="health_worker">Health Worker</option>
-          <option value="admin">Admin</option>
-        </select>
+
         <button
           type="submit"
           disabled={isSubmitting}
-          className="font-bold bg-red-950 text-white px-4 py-2 rounded hover:bg-red-800 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="mt-4 w-full bg-brand-red text-white font-semibold py-3 rounded-xl hover:bg-brand-dark transition-all focus:ring-4 focus:ring-red-500/30 active:scale-[0.98] disabled:opacity-70 disabled:cursor-not-allowed"
         >
-          {isSubmitting ? "Logging in..." : "Login"}
+          {isSubmitting ? "Signing In..." : "Sign In"}
         </button>
-
       </form>
-      <p className="text-black/80 mt-5 text-center max-w-[20rem]">
-        No account?{" "}
-        <span className="text-black font-bold">
-          <button onClick={() => setIsRegisteringState(false)} className="underline">
-            Register here
-          </button>
-        </span>
-      </p>
+
+      <div className="mt-8 text-center text-sm text-slate-600">
+        Don't have an account?{" "}
+        <button 
+          onClick={() => setIsRegisteringState(false)} 
+          className="font-semibold text-brand-red hover:text-brand-dark transition-colors"
+        >
+          Create patient account
+        </button>
+      </div>
     </div>
   );
 }

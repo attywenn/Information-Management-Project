@@ -3,7 +3,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  // Backend has no session endpoint; login state is set only after POST /login success
+  // Login state is managed in local storage for frontend-only development.
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [user, setUser] = useState(null); // { username, role }
   const [token, setToken] = useState(null);

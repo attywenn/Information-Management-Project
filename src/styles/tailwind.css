@@ -1,1 +1,13 @@
 @import "tailwindcss";
+
+@theme {
+  --color-brand-red: #dc2626;      /* A more vibrant, accessible red */
+  --color-brand-dark: #991b1b;     /* Refined dark red for hover states */
+  --font-sans: "Inter", sans-serif;
+}
+
+@layer base {
+  body {
+    @apply font-sans antialiased bg-slate-50 text-slate-800;
+  }
+}
