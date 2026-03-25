@@ -21,7 +21,7 @@ function DashboardNavigation() {
         { label: "Dashboard", path: "/dashboard", icon: faChartPie },
         { label: "Profile", path: "/profile", icon: faUser },
         { label: "Schedules", path: "/schedules", icon: faCalendarDays },
-        { label: "Contact us", path: "/contact-us", icon: faPhone },
+        { label: "History", path: "/history", icon: faPhone },
         { label: "FAQs", path: "/faqs-dashboard", icon: faCircleQuestion },
         { label: "Inbox", path: "/inbox", icon: faInbox },
         { label: "Settings", path: "/settings", icon: faGear },

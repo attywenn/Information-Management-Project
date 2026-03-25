@@ -14,25 +14,23 @@ function Homepage() {
             alt="San Perfecto Health Center exterior"
             className="w-full h-full object-cover opacity-40 mix-blend-overlay"
           />
-          <div className="absolute inset-0 bg-gradient-to-t from-slate-900 via-slate-900/40 to-transparent"></div>
+          <div className="absolute inset-0 bg-linear-to-t from-slate-900 via-slate-900/40 to-transparent"></div>
         </div>
         
         <div className="relative px-6 py-16 sm:px-12 sm:py-24 max-w-3xl">
           <h1 className="text-3xl sm:text-5xl font-bold text-white tracking-tight mb-4 leading-tight">
-            Quality Healthcare for <br className="hidden sm:block" />
+            Healthcare for the people of <br className="hidden sm:block" />
             <span className="text-red-400">San Perfecto</span>
           </h1>
           <p className="text-lg sm:text-xl text-slate-200 mb-8 max-w-2xl leading-relaxed">
-            Welcome to the official portal of Barangay San Perfecto Health Center. 
-            Access your medical records, schedule appointments, and connect with 
-            our healthcare professionals.
+            The official online healthcare portal for the people of Barangay San Perfecto, San Juan City. <span className="font-bold">Kalusugan, alagaan!</span>
           </p>
           <div className="flex flex-wrap gap-4">
             <Link 
               to="/account" 
               className="px-6 py-3 rounded-xl bg-brand-red text-white font-semibold hover:bg-brand-dark transition-all focus:ring-4 focus:ring-red-500/30 active:scale-95 shadow-lg shadow-red-900/20"
             >
-              Sign In to Portal
+              Get Started
             </Link>
             <Link 
               to="/contact" 
@@ -48,18 +46,18 @@ function Homepage() {
       <section className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {[
           {
-            title: "Online Consultations",
-            desc: "Book and manage your appointments with our doctors easily from home.",
+            title: "Online Appointments",
+            desc: "Pumili ng bakanteng schedule para sa libre at mabilis na konsultasyon mula sa mga propesyunal na barangay health workers. ",
             icon: faStethoscope
           },
           {
             title: "Health Records",
-            desc: "Securely access your medical history and prescription records anytime.",
+            desc: "Ang iyong account ay may secure access sa iyong health records, kabilang ang mga konsultasyon, bakuna, at iba pang mahahalagang impormasyon sa kalusugan.",
             icon: faFileMedical
           },
           {
             title: "Community Program",
-            desc: "Stay updated on vaccination drives and barangay health initiatives.",
+            desc: "Tingnan sa inyong inbox ang mga paparating na ",
             icon: faHouseChimneyMedical
           }
         ].map((item, i) => (

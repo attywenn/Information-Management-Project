@@ -1,21 +1,25 @@
 function FAQs() {
   const faqs = [
     {
-      q: "What are the health center's operating hours?",
-      a: "We are open from Monday to Friday, 8:00 AM to 5:00 PM. We are closed on weekends and regular Philippine holidays."
+      q: "Tuwing kailan pwedeng magpakonsulta sa San Perfecto Health Center?",
+      a: "Bukas ang tanggapan ng San Perfecto Health Center mula 8:00 AM hanggang 5:00 PM.",
     },
     {
-      q: "How do I schedule an appointment?",
-      a: "You can schedule an appointment by logging into your account on this portal or by visiting the center in person."
+      q: "Libre ba ang konsultasyon?",
+      a: "Opo, libre ang konsultasyon para sa mga residente ng Barangay San Perfecto. Ito ay mula sa buwis ng taumbayan. Walang babayaran ang mga magpapakonsulta mula sa pagpapa-check up hanggang sa mga gamot na ipapamahagi batay sa karamdaman ng pasyente.",
     },
     {
-      q: "Are the services completely free?",
-      a: "Yes, basic health consultations and available municipal medicines are fully subsidized for residents of Barangay San Perfecto."
+      q: "Sino ang gumawa ng website na ito?",
+      a: "Ito ay kontribusyon ng mga iskolar ng bayan mula sa EARIST - College of Computing Studies.",
     },
     {
-      q: "What do I need to bring for my first visit?",
-      a: "Please bring a valid ID verifying your residence in San Perfecto and your PhilHealth ID if available."
-    }
+      q: "Pwede ba akong magpa-schedule ng aking pagpapakonsulta online?",
+      a: "Opo, maaaring magpa-schedule ng inyong pagpapakonsulta basta't may access ka sa internet at ang iyong account ay nakarehistro sa aming sistema. Maaari kang pumili ng bakanteng schedule para sa libre at mabilis na konsultasyon mula sa mga propesyunal na barangay health workers. Para magpa-schedule, mag-login lamang sa iyong account at pumunta sa 'Schedule Consultation' section.",
+    },
+    {
+      q: "Puwede bang magpa-konsulta ang mga hindi residente ng Barangay San Perfecto?",
+      a: "Hindi po, ang serbisyo ng San Perfecto Health Center ay eksklusibo para sa mga residente ng Barangay San Perfecto. Ito ay upang matiyak na ang mga resources ng health center ay nakalaan para sa mga taong tunay na nangangailangan sa aming komunidad.",
+    },
   ];
 
   return (
@@ -31,17 +35,17 @@ function FAQs() {
 
       <div className="grid gap-4">
         {faqs.map((faq, index) => (
-          <div 
+          <div
             key={index}
             className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm hover:shadow-md transition-shadow"
           >
             <h3 className="text-lg font-semibold text-slate-900 mb-3 flex items-start gap-3">
-              <span className="text-brand-red font-bold text-xl shrink-0">Q.</span>
+              <span className="text-brand-red font-bold text-xl shrink-0">
+                Q.
+              </span>
               {faq.q}
             </h3>
-            <p className="text-slate-600 leading-relaxed pl-8">
-              {faq.a}
-            </p>
+            <p className="text-slate-600 leading-relaxed pl-8">{faq.a}</p>
           </div>
         ))}
       </div>

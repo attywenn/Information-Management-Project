@@ -1,3 +1,7 @@
+import Pin from "../assets/images/location-pin.png";
+import Tel from "../assets/images/telephone.png";
+import Email from "../assets/images/email.png";
+
 function Contact() {
   return (
     <div className="max-w-4xl mx-auto py-8">
@@ -15,7 +19,7 @@ function Contact() {
           
           <div className="space-y-6">
             <div className="flex items-start gap-4">
-              <div className="text-2xl mt-1">📍</div>
+              <div className="text-2xl mt-1"><img src={Pin} alt="Location Pin" className="size-8" /></div>
               <div>
                 <h3 className="font-semibold text-slate-900">Address</h3>
                 <p className="text-slate-600">123 Perfecto St., Barangay San Perfecto<br/>City of San Juan, Metro Manila</p>
@@ -23,7 +27,7 @@ function Contact() {
             </div>
             
             <div className="flex items-start gap-4">
-              <div className="text-2xl mt-1">📞</div>
+              <div className="text-2xl mt-1"><img src={Tel} alt="Location Pin" className="size-8" /></div>
               <div>
                 <h3 className="font-semibold text-slate-900">Phone</h3>
                 <p className="text-slate-600">+63 (2) 8123 4567<br/>0917-123-4567</p>
@@ -31,10 +35,10 @@ function Contact() {
             </div>
             
             <div className="flex items-start gap-4">
-              <div className="text-2xl mt-1">✉️</div>
+              <div className="text-2xl mt-1"><img src={Email} alt="Location Pin" className="size-8" /></div>
               <div>
                 <h3 className="font-semibold text-slate-900">Email</h3>
-                <p className="text-brand-red font-medium">hc.sanperfecto@sanjuan.gov.ph</p>
+                <p className="text-brand-red font-medium">brgysanperfecto@sanjuan.gov.ph</p>
               </div>
             </div>
           </div>
@@ -62,7 +66,7 @@ function Contact() {
           <div className="mt-8 p-4 bg-slate-800 rounded-xl">
             <p className="text-sm text-slate-300 flex items-center gap-2">
               <span className="text-xl">⚠️</span>
-              In case of severe emergency, please go to the nearest general hospital.
+              In case of severe emergency, contact 911 or go to the nearest hospital immediately.
             </p>
           </div>
         </div>

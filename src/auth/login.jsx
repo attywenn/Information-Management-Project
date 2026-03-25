@@ -9,6 +9,7 @@ function Login({ setIsRegisteringState }) {
   const [password, setPassword] = useState("");
   const [dob, setDob] = useState("");
   const [role, setRole] = useState("patient");
+  const [hwID, setHwID] = useState("");
   const [adminQ1, setAdminQ1] = useState("");
   const [adminQ2, setAdminQ2] = useState("");
   const [adminQ3, setAdminQ3] = useState("");
@@ -97,6 +98,23 @@ function Login({ setIsRegisteringState }) {
             required
           />
         </div>
+
+        {role === "health_worker" && (
+          <div className="space-y-1.5">
+            <label htmlFor="hw-q1" className="text-sm font-semibold text-slate-700">
+              Health Worker ID
+            </label>
+            <input
+              id="hw-q1"
+              type="text"
+              placeholder="Enter your Health Worker ID"
+              className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red transition-all"
+              value={hwID}
+              onChange={(e) => setHwID(e.target.value)}
+              required
+            />
+          </div>
+        )}
 
         {role === "patient" && (
           <div className="space-y-1.5">

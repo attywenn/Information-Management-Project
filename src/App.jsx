@@ -40,7 +40,7 @@ function AppContent() {
         "/dashboard",
         "/profile",
         "/schedules",
-        "/contact-us",
+        "/history",
         "/faqs-dashboard",
         "/inbox",
         "/settings",

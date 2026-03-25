@@ -576,34 +576,33 @@ function UserDashboard() {
         if (path === "/manage-accounts") return renderManageAccounts();
 
         if (path === "/schedules") {
-            return <p className="text-sm text-gray-700">Schedules module coming soon.</p>;
+            return <p className="text-3xl text-gray-700">Route for schedules is currently under development.</p>;
         }
-        if (path === "/contact-us") {
+        if (path === "/history") {
             return (
-                <p className="text-sm text-gray-700">
-                    Contact health center staff for assistance. This section will be expanded.
+                <p className="text-3xl text-gray-700">
+                    Route for activity history and logs is currently under development.
                 </p>
             );
         }
         if (path === "/faqs-dashboard") {
             return (
-                <p className="text-sm text-gray-700">
-                    Frequently asked questions about your account will appear here.
+                <p className="text-3xl text-gray-700">
+                    Route for frequently asked questions is currently under development.
                 </p>
             );
         }
         if (path === "/inbox") {
             return (
-                <p className="text-sm text-gray-700">
-                    Inbox and notifications will be available in a future update.
+                <p className="text-3xl text-gray-700">
+                    Route for inbox and notifications is currently under development.
                 </p>
             );
         }
         if (path === "/settings") {
             return (
-                <p className="text-sm text-gray-700">
-                    Additional settings will be available here later. For now, use the Profile tab
-                    to change password and photo.
+                <p className="text-3xl text-gray-700">
+                    Route for account settings and preferences is currently under development.
                 </p>
             );
         }
