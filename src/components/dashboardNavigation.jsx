@@ -1,16 +1,17 @@
 import { NavLink, useNavigate } from "react-router-dom";
-import { useAuth } from "../context/AuthContext.jsx";
+import { useAuth } from "../context/useAuth.js";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
     faChartPie,
     faUser,
     faCalendarDays,
     faPhone,
-    faCircleQuestion,
     faInbox,
     faGear,
     faUsers,
     faRightFromBracket,
+    faStethoscope,
+    faBox,
 } from "@fortawesome/free-solid-svg-icons";
 
 function DashboardNavigation() {
@@ -22,13 +23,21 @@ function DashboardNavigation() {
         { label: "Profile", path: "/profile", icon: faUser },
         { label: "Schedules", path: "/schedules", icon: faCalendarDays },
         { label: "History", path: "/history", icon: faPhone },
-        { label: "FAQs", path: "/faqs-dashboard", icon: faCircleQuestion },
         { label: "Inbox", path: "/inbox", icon: faInbox },
         { label: "Settings", path: "/settings", icon: faGear },
     ];
 
     if (user?.role === "admin") {
         tabs.splice(3, 0, { label: "Manage Accounts", path: "/manage-accounts", icon: faUsers });
+    }
+
+    if (user?.role === "health_worker") {
+        tabs.splice(3, 0, { label: "Consultation", path: "/consultation", icon: faStethoscope });
+        tabs.splice(4, 0, { label: "Inventory", path: "/inventory", icon: faBox });
+    }
+
+    if (user?.role === "admin") {
+        tabs.splice(4, 0, { label: "Inventory", path: "/inventory", icon: faBox });
     }
 
     return (

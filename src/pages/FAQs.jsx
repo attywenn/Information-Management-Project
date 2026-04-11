@@ -10,7 +10,7 @@ function FAQs() {
     },
     {
       q: "Sino ang gumawa ng website na ito?",
-      a: "Ito ay kontribusyon ng mga iskolar ng bayan mula sa EARIST - College of Computing Studies.",
+      a: "Ito ay libreng kontribusyon ng mga iskolar ng bayan mula sa EARIST - College of Computing Studies.",
     },
     {
       q: "Pwede ba akong magpa-schedule ng aking pagpapakonsulta online?",

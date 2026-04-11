@@ -1,59 +1,57 @@
-import { createContext, useContext, useEffect, useState } from "react";
-
-const AuthContext = createContext(null);
+import { useState } from "react";
+import { AuthContext } from "./authContextValue.js";
 
 export function AuthProvider({ children }) {
-  // Login state is managed in local storage for frontend-only development.
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [user, setUser] = useState(null); // { username, role }
-  const [token, setToken] = useState(null);
+  const [authState, setAuthState] = useState(() => {
+    try {
+      const stored = window.localStorage.getItem("auth");
+      if (!stored) return { isLoggedIn: false, user: null, token: null };
+      const parsed = JSON.parse(stored);
+      if (parsed?.user?.username && parsed?.user?.role && parsed?.token) {
+        return { isLoggedIn: true, user: parsed.user, token: parsed.token };
+      }
+    } catch {
+      window.localStorage.removeItem("auth");
+    }
+    return { isLoggedIn: false, user: null, token: null };
+  });
 
-  const login = ({ username, role, token }) => {
-    setIsLoggedIn(true);
-    setUser(username ? { username, role } : null);
-    setToken(token || null);
+  const login = ({ token, ...userData }) => {
+    const nextState = {
+      isLoggedIn: true,
+      user: userData?.username ? userData : null,
+      token: token || null,
+    };
+    setAuthState(nextState);
 
-    // Persist to localStorage so refresh keeps the session
     const payload = {
-      user: username ? { username, role } : null,
+      user: userData?.username ? userData : null,
       token: token || null,
     };
     window.localStorage.setItem("auth", JSON.stringify(payload));
   };
 
+  const updateUser = (patch) => {
+    setAuthState((previousState) => {
+      const nextUser = previousState.user ? { ...previousState.user, ...patch } : previousState.user;
+      const nextState = { ...previousState, user: nextUser };
+      window.localStorage.setItem(
+        "auth",
+        JSON.stringify({ user: nextUser, token: previousState.token })
+      );
+      return nextState;
+    });
+  };
+
   const logout = () => {
-    setIsLoggedIn(false);
-    setUser(null);
-    setToken(null);
+    setAuthState({ isLoggedIn: false, user: null, token: null });
 
     window.localStorage.removeItem("auth");
   };
 
-   // On first load, restore auth state from localStorage if available
-  useEffect(() => {
-    try {
-      const stored = window.localStorage.getItem("auth");
-      if (!stored) return;
-      const parsed = JSON.parse(stored);
-      if (parsed?.user?.username && parsed?.user?.role && parsed?.token) {
-        setIsLoggedIn(true);
-        setUser({ username: parsed.user.username, role: parsed.user.role });
-        setToken(parsed.token);
-      }
-    } catch {
-      window.localStorage.removeItem("auth");
-    }
-  }, []);
-
   return (
-    <AuthContext.Provider value={{ isLoggedIn, user, token, login, logout }}>
+    <AuthContext.Provider value={{ ...authState, login, logout, updateUser }}>
       {children}
     </AuthContext.Provider>
   );
-}
-
-export function useAuth() {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used inside AuthProvider");
-  return ctx;
 }

@@ -3,6 +3,7 @@ import Tel from "../assets/images/telephone.png";
 import Email from "../assets/images/email.png";
 
 function Contact() {
+
   return (
     <div className="max-w-4xl mx-auto py-8">
       <div className="mb-8">

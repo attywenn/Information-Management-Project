@@ -1,17 +1,43 @@
 import { useState } from "react";
 
+const ACCOUNTS_STORAGE_KEY = "sanperfecto-accounts";
+const SECURITY_QUESTIONS = [
+    "Name of your cat",
+    "Favorite actor/actress",
+    "Favorite food",
+    "Name of your first school",
+    "Your childhood nickname",
+];
+
+const hashText = (text) => {
+    let hash = 0;
+    for (let i = 0; i < text.length; i += 1) {
+        hash = (hash << 5) - hash + text.charCodeAt(i);
+        hash |= 0;
+    }
+    return Math.abs(hash);
+};
+
+const buildPatientCode = (seedText) => {
+    const digits = String(hashText(seedText) % 1000000000000).padStart(12, "0");
+    return `PATIENT${digits}`;
+};
+
 function Register({ setIsRegisteringState }) {
     const [username, setUsername] = useState("");
+    const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [confirmPassword, setConfirmPassword] = useState("");
     const [surname, setSurname] = useState("");
     const [firstname, setFirstname] = useState("");
     const [middlename, setMiddlename] = useState("");
     const [dob, setDob] = useState("");
-    const [address, setAddress] = useState("");
+    const [houseNumber, setHouseNumber] = useState("");
+    const [street, setStreet] = useState("");
+    const [purokSubdivision, setPurokSubdivision] = useState("");
+    const [securityQuestion, setSecurityQuestion] = useState(SECURITY_QUESTIONS[0]);
+    const [securityAnswer, setSecurityAnswer] = useState("");
     const [contactNumber, setContactNumber] = useState("");
-    const [profileImage, setProfileImage] = useState(null);
-    const [identityImage, setIdentityImage] = useState(null);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState("");
     const [success, setSuccess] = useState("");
@@ -25,6 +51,10 @@ function Register({ setIsRegisteringState }) {
             setError("Passwords do not match");
             return;
         }
+        if (!securityAnswer.trim()) {
+            setError("Security answer is required for password recovery.");
+            return;
+        }
 
         setIsSubmitting(true);
 
@@ -32,18 +62,57 @@ function Register({ setIsRegisteringState }) {
             // Frontend-only mode: keep UX flow without sending data to backend.
             await new Promise((resolve) => setTimeout(resolve, 350));
 
-            setSuccess("Registration saved locally for UI testing. You can now log in.");
+            const displayName = `${firstname} ${surname}`.trim() || username;
+            const patientCode = buildPatientCode(`${username}-${dob}-${contactNumber}`);
+            const fixedAddress = {
+                region: "NCR",
+                province: "METRO MANILA",
+                city: "SAN JUAN CITY",
+                barangay: "BARANGAY SAN PERFECTO",
+                houseNumber,
+                street,
+                purokSubdivision,
+            };
+            const fullAddress = `${houseNumber}, ${street}, ${purokSubdivision}, BARANGAY SAN PERFECTO, SAN JUAN CITY, METRO MANILA, NCR`;
+            const storedAccounts = JSON.parse(window.localStorage.getItem(ACCOUNTS_STORAGE_KEY) || "[]");
+            const nextAccounts = [
+                ...storedAccounts.filter((account) => !(account.username === username && account.role === "patient")),
+                {
+                    username,
+                    email,
+                    role: "patient",
+                    displayName,
+                    patientCode,
+                    patientId: patientCode,
+                    surname,
+                    firstname,
+                    middlename,
+                    dob,
+                    address: fixedAddress,
+                    fullAddress,
+                    contactNumber,
+                    password,
+                    securityQuestion,
+                    securityAnswer: securityAnswer.trim(),
+                },
+            ];
+            window.localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(nextAccounts));
+
+            setSuccess(`Registration saved locally for UI testing. Your Patient ID is ${patientCode}.`);
             setUsername("");
+            setEmail("");
             setPassword("");
             setConfirmPassword("");
             setSurname("");
             setFirstname("");
             setMiddlename("");
             setDob("");
-            setAddress("");
+            setHouseNumber("");
+            setStreet("");
+            setPurokSubdivision("");
+            setSecurityQuestion(SECURITY_QUESTIONS[0]);
+            setSecurityAnswer("");
             setContactNumber("");
-            setProfileImage(null);
-            setIdentityImage(null);
             setTimeout(() => setIsRegisteringState(true), 1500);
         } catch {
             setError("Unable to complete registration. Please try again.");
@@ -79,6 +148,11 @@ function Register({ setIsRegisteringState }) {
                     <div>
                         <label className={labelClass} htmlFor="reg-username">Username</label>
                         <input id="reg-username" type="text" className={inputClass} value={username} onChange={(e) => setUsername(e.target.value)} required />
+                    </div>
+
+                    <div>
+                        <label className={labelClass} htmlFor="reg-email">Email Address</label>
+                        <input id="reg-email" type="email" className={inputClass} value={email} onChange={(e) => setEmail(e.target.value)} required />
                     </div>
 
                     <div className="grid grid-cols-2 gap-3">
@@ -122,22 +196,73 @@ function Register({ setIsRegisteringState }) {
                         <input id="reg-contact" type="text" className={inputClass} value={contactNumber} onChange={(e) => setContactNumber(e.target.value)} required />
                     </div>
 
-                    <div>
-                        <label className={labelClass} htmlFor="reg-address">Full Address</label>
-                        <textarea id="reg-address" className={`${inputClass} resize-none h-20`} value={address} onChange={(e) => setAddress(e.target.value)} required />
+                    <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <p className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Address (Philippine Hierarchy)</p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div>
+                                <label className={labelClass} htmlFor="reg-region">Region</label>
+                                <input id="reg-region" type="text" className={`${inputClass} opacity-80 cursor-not-allowed`} value="NCR" readOnly />
+                            </div>
+                            <div>
+                                <label className={labelClass} htmlFor="reg-province">Province</label>
+                                <input id="reg-province" type="text" className={`${inputClass} opacity-80 cursor-not-allowed`} value="METRO MANILA" readOnly />
+                            </div>
+                            <div>
+                                <label className={labelClass} htmlFor="reg-city">City</label>
+                                <input id="reg-city" type="text" className={`${inputClass} opacity-80 cursor-not-allowed`} value="SAN JUAN CITY" readOnly />
+                            </div>
+                            <div>
+                                <label className={labelClass} htmlFor="reg-barangay">Barangay</label>
+                                <input id="reg-barangay" type="text" className={`${inputClass} opacity-80 cursor-not-allowed`} value="BARANGAY SAN PERFECTO" readOnly />
+                            </div>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div>
+                                <label className={labelClass} htmlFor="reg-house-number">House Number</label>
+                                <input id="reg-house-number" type="text" className={inputClass} value={houseNumber} onChange={(e) => setHouseNumber(e.target.value)} required />
+                            </div>
+                            <div>
+                                <label className={labelClass} htmlFor="reg-street">Street</label>
+                                <input id="reg-street" type="text" className={inputClass} value={street} onChange={(e) => setStreet(e.target.value)} required />
+                            </div>
+                            <div>
+                                <label className={labelClass} htmlFor="reg-purok">Purok/Subdivision</label>
+                                <input id="reg-purok" type="text" className={inputClass} value={purokSubdivision} onChange={(e) => setPurokSubdivision(e.target.value)} required />
+                            </div>
+                        </div>
                     </div>
 
                     <hr className="border-slate-200" />
 
-                    <div>
-                        <label className={labelClass} htmlFor="reg-profile-image">Profile Image (Optional)</label>
-                        <input id="reg-profile-image" type="file" accept="image/*" className={`${inputClass} p-1.5`} onChange={(e) => setProfileImage(e.target.files?.[0] || null)} />
+                    <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                        <p className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Security Question (Required)</p>
+                        <div>
+                            <label className={labelClass} htmlFor="reg-security-question">Choose a question</label>
+                            <select
+                                id="reg-security-question"
+                                className={inputClass}
+                                value={securityQuestion}
+                                onChange={(e) => setSecurityQuestion(e.target.value)}
+                                required
+                            >
+                                {SECURITY_QUESTIONS.map((question) => (
+                                    <option key={question} value={question}>{question}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div>
+                            <label className={labelClass} htmlFor="reg-security-answer">Your answer</label>
+                            <input
+                                id="reg-security-answer"
+                                type="text"
+                                className={inputClass}
+                                value={securityAnswer}
+                                onChange={(e) => setSecurityAnswer(e.target.value)}
+                                required
+                            />
+                        </div>
                     </div>
 
-                    <div>
-                        <label className={labelClass} htmlFor="reg-identity-image">Proof of Identity (Optional)</label>
-                        <input id="reg-identity-image" type="file" accept="image/*" className={`${inputClass} p-1.5`} onChange={(e) => setIdentityImage(e.target.files?.[0] || null)} />
-                    </div>
                 </div>
 
                 <button

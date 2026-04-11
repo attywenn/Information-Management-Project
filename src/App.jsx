@@ -1,6 +1,7 @@
-import React from "react";
+import React, { useEffect } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider, useAuth } from "./context/AuthContext.jsx";
+import { AuthProvider } from "./context/AuthContext.jsx";
+import { useAuth } from "./context/useAuth.js";
 import Homepage from "./pages/homepage.jsx";
 import Account from "./pages/Account.jsx";
 import Contact from "./pages/Contact.jsx";
@@ -32,7 +33,13 @@ function Dashboard() {
 }
 
 function AppContent() {
-  const { isLoggedIn } = useAuth();
+  const { isLoggedIn, user } = useAuth();
+
+  useEffect(() => {
+    const theme = user?.theme === "dark" ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", theme);
+    document.body.classList.toggle("dark-mode", theme === "dark");
+  }, [user?.theme]);
 
   return (
     <Routes>
@@ -41,6 +48,8 @@ function AppContent() {
         "/profile",
         "/schedules",
         "/history",
+        "/consultation",
+        "/inventory",
         "/faqs-dashboard",
         "/inbox",
         "/settings",

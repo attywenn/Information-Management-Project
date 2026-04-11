@@ -46,7 +46,7 @@ function Account({ isRegistering }) {
               Barangay San Perfecto <br/> Health Center
             </p>
             <p className="text-sm text-slate-300 mt-2">
-              Securely access your health records and consultations online.
+              Resident's portal for digitalized health services
             </p>
           </div>
         </div>
