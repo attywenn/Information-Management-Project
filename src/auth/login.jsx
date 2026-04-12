@@ -5,6 +5,31 @@ import { useAuth } from "../context/useAuth.js";
 const ACCOUNTS_STORAGE_KEY = "sanperfecto-accounts";
 const ADMIN_OTP_STORAGE_KEY = "sanperfecto-admin-otp";
 
+const loadAccounts = () => {
+  try {
+    return JSON.parse(window.localStorage.getItem(ACCOUNTS_STORAGE_KEY) || "[]");
+  } catch {
+    return [];
+  }
+};
+
+const findPatientAccount = ({ identifier, email }) => {
+  const normalizedIdentifier = identifier.trim().toLowerCase();
+  const normalizedEmail = email.trim().toLowerCase();
+
+  return loadAccounts().find((account) => {
+    if (account.role !== "patient") {
+      return false;
+    }
+
+    const accountIdentifiers = [account.username, account.email, account.patientCode, account.patientId]
+      .filter(Boolean)
+      .map((value) => String(value).toLowerCase());
+
+    return accountIdentifiers.includes(normalizedIdentifier) || (normalizedEmail && accountIdentifiers.includes(normalizedEmail));
+  }) || null;
+};
+
 function Login({ setIsRegisteringState }) {
   const navigate = useNavigate();
   const { login } = useAuth();
@@ -38,14 +63,26 @@ function Login({ setIsRegisteringState }) {
       await new Promise((resolve) => setTimeout(resolve, 350));
 
       if (role === "patient") {
+        const storedPatient = findPatientAccount({ identifier, email });
+        const patientCode = storedPatient?.patientCode || storedPatient?.patientId || `PATIENT${String(Date.now()).slice(-12).padStart(12, "0")}`;
+
         login({
-          username: identifier || email || "patient.user",
+          username: storedPatient?.username || identifier || email || "patient.user",
           role: "patient",
-          displayName: identifier || email || "Patient",
-          patientCode: identifier?.startsWith("PATIENT") ? identifier : `PATIENT${String(Date.now()).slice(-12).padStart(12, "0")}`,
-          email: email || identifier || "",
-          password,
-          dob,
+          displayName: storedPatient?.displayName || storedPatient?.firstname || identifier || email || "Patient",
+          patientCode,
+          patientId: patientCode,
+          surname: storedPatient?.surname || "",
+          firstname: storedPatient?.firstname || "",
+          middlename: storedPatient?.middlename || "",
+          email: storedPatient?.email || email || identifier || "",
+          password: storedPatient?.password || password,
+          dob: storedPatient?.dob || dob,
+          address: storedPatient?.address || null,
+          fullAddress: storedPatient?.fullAddress || "",
+          contactNumber: storedPatient?.contactNumber || "",
+          securityQuestion: storedPatient?.securityQuestion || "",
+          securityAnswer: storedPatient?.securityAnswer || "",
           token: "frontend-only-session",
         });
         navigate("/dashboard", { replace: true });

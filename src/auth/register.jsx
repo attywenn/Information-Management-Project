@@ -9,6 +9,9 @@ const SECURITY_QUESTIONS = [
     "Your childhood nickname",
 ];
 
+const KEYBOARD_SPECIAL_CHAR_PATTERN = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]/;
+const KEYBOARD_ALLOWED_PATTERN = /^[A-Za-z0-9!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]+$/;
+
 const hashText = (text) => {
     let hash = 0;
     for (let i = 0; i < text.length; i += 1) {
@@ -21,6 +24,39 @@ const hashText = (text) => {
 const buildPatientCode = (seedText) => {
     const digits = String(hashText(seedText) % 1000000000000).padStart(12, "0");
     return `PATIENT${digits}`;
+};
+
+const evaluatePasswordStrength = (password) => {
+    const safe = String(password || "");
+    let score = 0;
+
+    if (safe.length >= 8) score += 1;
+    if (safe.length >= 12) score += 1;
+    if (/[A-Z]/.test(safe)) score += 1;
+    if (/[a-z]/.test(safe)) score += 1;
+    if (/\d/.test(safe)) score += 1;
+    if (KEYBOARD_SPECIAL_CHAR_PATTERN.test(safe)) score += 1;
+
+    if (score <= 2) {
+        return { label: "Weak", textClass: "text-red-600", barClass: "bg-red-500", widthClass: "w-1/3" };
+    }
+    if (score <= 4) {
+        return { label: "Medium", textClass: "text-amber-600", barClass: "bg-amber-500", widthClass: "w-2/3" };
+    }
+    return { label: "Strong", textClass: "text-emerald-600", barClass: "bg-emerald-500", widthClass: "w-full" };
+};
+
+const validatePasswordPolicy = (password) => {
+    if (!password) return "Password is required.";
+    if (password.includes(" ")) return "Spaces are not allowed in password.";
+    if (!KEYBOARD_ALLOWED_PATTERN.test(password)) {
+        return "Use only letters, numbers, and common keyboard symbols in password.";
+    }
+    if (!/[A-Z]/.test(password)) return "Password must contain at least one uppercase letter.";
+    if (!KEYBOARD_SPECIAL_CHAR_PATTERN.test(password)) {
+        return "Password must contain at least one special character.";
+    }
+    return "";
 };
 
 function Register({ setIsRegisteringState }) {
@@ -41,11 +77,20 @@ function Register({ setIsRegisteringState }) {
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState("");
     const [success, setSuccess] = useState("");
+    const passwordStrength = evaluatePasswordStrength(password);
+    const passwordRuleError = validatePasswordPolicy(password);
+    const hasConfirmPassword = confirmPassword.length > 0;
+    const isPasswordMatched = hasConfirmPassword && password === confirmPassword;
 
     const handleSubmit = async (e) => {
         e.preventDefault();
         setError("");
         setSuccess("");
+
+        if (passwordRuleError) {
+            setError(passwordRuleError);
+            return;
+        }
 
         if (password !== confirmPassword) {
             setError("Passwords do not match");
@@ -53,6 +98,20 @@ function Register({ setIsRegisteringState }) {
         }
         if (!securityAnswer.trim()) {
             setError("Security answer is required for password recovery.");
+            return;
+        }
+
+        const normalizedUsername = username.trim().toLowerCase();
+        const normalizedEmail = email.trim().toLowerCase();
+        const existingAccounts = JSON.parse(window.localStorage.getItem(ACCOUNTS_STORAGE_KEY) || "[]");
+        const hasDuplicateIdentity = existingAccounts.some(
+            (account) =>
+                String(account.username || "").trim().toLowerCase() === normalizedUsername ||
+                String(account.email || "").trim().toLowerCase() === normalizedEmail
+        );
+
+        if (hasDuplicateIdentity) {
+            setError("Username or email already exists.");
             return;
         }
 
@@ -76,10 +135,10 @@ function Register({ setIsRegisteringState }) {
             const fullAddress = `${houseNumber}, ${street}, ${purokSubdivision}, BARANGAY SAN PERFECTO, SAN JUAN CITY, METRO MANILA, NCR`;
             const storedAccounts = JSON.parse(window.localStorage.getItem(ACCOUNTS_STORAGE_KEY) || "[]");
             const nextAccounts = [
-                ...storedAccounts.filter((account) => !(account.username === username && account.role === "patient")),
+                ...storedAccounts,
                 {
-                    username,
-                    email,
+                    username: username.trim(),
+                    email: email.trim(),
                     role: "patient",
                     displayName,
                     patientCode,
@@ -159,10 +218,23 @@ function Register({ setIsRegisteringState }) {
                         <div>
                             <label className={labelClass} htmlFor="reg-password">Password</label>
                             <input id="reg-password" type="password" className={inputClass} value={password} onChange={(e) => setPassword(e.target.value)} required />
+                            <div className="mt-2 rounded-full h-1.5 bg-slate-100 overflow-hidden">
+                                <div className={`h-full ${passwordStrength.barClass} ${passwordStrength.widthClass}`} />
+                            </div>
+                            <p className={`text-xs font-semibold mt-2 ${passwordStrength.textClass}`}>Password strength: {passwordStrength.label}</p>
+                            {password && passwordRuleError && (
+                                <p className="text-xs text-red-600 mt-1">{passwordRuleError}</p>
+                            )}
+                            <p className="text-xs text-slate-500 mt-1">Required: at least 1 uppercase letter, at least 1 special character, no spaces, common keyboard symbols only.</p>
                         </div>
                         <div>
                             <label className={labelClass} htmlFor="reg-confirm-password">Confirm Password</label>
                             <input id="reg-confirm-password" type="password" className={inputClass} value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required />
+                            {hasConfirmPassword && (
+                                <p className={`text-xs mt-2 font-semibold ${isPasswordMatched ? "text-emerald-600" : "text-red-600"}`}>
+                                    {isPasswordMatched ? "Password matched" : "Password does not match"}
+                                </p>
+                            )}
                         </div>
                     </div>
 

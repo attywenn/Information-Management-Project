@@ -22,10 +22,13 @@ function DashboardNavigation() {
         { label: "Dashboard", path: "/dashboard", icon: faChartPie },
         { label: "Profile", path: "/profile", icon: faUser },
         { label: "Schedules", path: "/schedules", icon: faCalendarDays },
-        { label: "History", path: "/history", icon: faPhone },
-        { label: "Inbox", path: "/inbox", icon: faInbox },
         { label: "Settings", path: "/settings", icon: faGear },
     ];
+
+    if (user?.role === "patient") {
+        tabs.splice(3, 0, { label: "History", path: "/history", icon: faPhone });
+        tabs.splice(4, 0, { label: "Inbox", path: "/inbox", icon: faInbox });
+    }
 
     if (user?.role === "admin") {
         tabs.splice(3, 0, { label: "Manage Accounts", path: "/manage-accounts", icon: faUsers });
