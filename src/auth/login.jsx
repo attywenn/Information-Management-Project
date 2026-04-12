@@ -1,34 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/useAuth.js";
-
-const ACCOUNTS_STORAGE_KEY = "sanperfecto-accounts";
-const ADMIN_OTP_STORAGE_KEY = "sanperfecto-admin-otp";
-
-const loadAccounts = () => {
-  try {
-    return JSON.parse(window.localStorage.getItem(ACCOUNTS_STORAGE_KEY) || "[]");
-  } catch {
-    return [];
-  }
-};
-
-const findPatientAccount = ({ identifier, email }) => {
-  const normalizedIdentifier = identifier.trim().toLowerCase();
-  const normalizedEmail = email.trim().toLowerCase();
-
-  return loadAccounts().find((account) => {
-    if (account.role !== "patient") {
-      return false;
-    }
-
-    const accountIdentifiers = [account.username, account.email, account.patientCode, account.patientId]
-      .filter(Boolean)
-      .map((value) => String(value).toLowerCase());
-
-    return accountIdentifiers.includes(normalizedIdentifier) || (normalizedEmail && accountIdentifiers.includes(normalizedEmail));
-  }) || null;
-};
+import { recoverPasswordWithSecurityAnswer, signInPortalAccount, signOutPortalAccount } from "../services/supabaseBackendService.js";
 
 function Login({ setIsRegisteringState }) {
   const navigate = useNavigate();
@@ -42,6 +15,7 @@ function Login({ setIsRegisteringState }) {
   const [adminId, setAdminId] = useState("");
   const [pinCode, setPinCode] = useState("");
   const [adminOtp, setAdminOtp] = useState("");
+  const [generatedAdminOtp, setGeneratedAdminOtp] = useState("");
   const [adminStep, setAdminStep] = useState("credentials");
   const [adminOtpMessage, setAdminOtpMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -59,75 +33,53 @@ function Login({ setIsRegisteringState }) {
     setIsSubmitting(true);
 
     try {
-      // Frontend-only mode: simulate a short login delay without backend calls.
-      await new Promise((resolve) => setTimeout(resolve, 350));
-
-      if (role === "patient") {
-        const storedPatient = findPatientAccount({ identifier, email });
-        const patientCode = storedPatient?.patientCode || storedPatient?.patientId || `PATIENT${String(Date.now()).slice(-12).padStart(12, "0")}`;
-
-        login({
-          username: storedPatient?.username || identifier || email || "patient.user",
-          role: "patient",
-          displayName: storedPatient?.displayName || storedPatient?.firstname || identifier || email || "Patient",
-          patientCode,
-          patientId: patientCode,
-          surname: storedPatient?.surname || "",
-          firstname: storedPatient?.firstname || "",
-          middlename: storedPatient?.middlename || "",
-          email: storedPatient?.email || email || identifier || "",
-          password: storedPatient?.password || password,
-          dob: storedPatient?.dob || dob,
-          address: storedPatient?.address || null,
-          fullAddress: storedPatient?.fullAddress || "",
-          contactNumber: storedPatient?.contactNumber || "",
-          securityQuestion: storedPatient?.securityQuestion || "",
-          securityAnswer: storedPatient?.securityAnswer || "",
-          token: "frontend-only-session",
-        });
-        navigate("/dashboard", { replace: true });
-        return;
-      }
-
-      if (role === "health_worker") {
-        login({
-          username: identifier || email || "health.worker",
-          role: "health_worker",
-          displayName: identifier || email || "Health Worker",
-          workerId: identifier || `HW-${String(Date.now()).slice(-6)}`,
-          email: email || identifier || "",
-          password,
-          dob,
-          systemLicenseNumber,
-          token: "frontend-only-session",
-        });
-        navigate("/dashboard", { replace: true });
-        return;
-      }
-
-      if (adminStep === "credentials") {
+      if (role === "admin" && adminStep === "credentials") {
         const otp = String(Math.floor(100000 + Math.random() * 900000));
-        window.localStorage.setItem(ADMIN_OTP_STORAGE_KEY, otp);
+        setGeneratedAdminOtp(otp);
         setAdminStep("otp");
         setAdminOtpMessage(`OTP sent to ${email || "your email"}. Demo OTP: ${otp}`);
         return;
       }
 
-      window.localStorage.removeItem(ADMIN_OTP_STORAGE_KEY);
-      login({
-        username: adminId || email || "admin.user",
-        role: "admin",
-        displayName: adminId || email || "Administrator",
-        adminId: adminId || `ADMIN-${String(Date.now()).slice(-6)}`,
-        email: email || "",
+      if (role === "admin" && adminOtp !== generatedAdminOtp) {
+        setError("Invalid OTP. Please try again.");
+        return;
+      }
+
+      const loginIdentifier = role === "admin" ? (adminId || email) : identifier;
+      const { session, profile } = await signInPortalAccount({
+        identifier: loginIdentifier,
         password,
+        role,
         dob,
-        pinCode,
-        token: "frontend-only-session",
+      });
+
+      if (role === "health_worker" && systemLicenseNumber.trim() && profile.workerId && profile.workerId !== systemLicenseNumber.trim()) {
+        await signOutPortalAccount();
+        setError("Health Worker ID does not match account record.");
+        return;
+      }
+
+      if (role === "admin") {
+        if (adminId.trim() && profile.adminId && profile.adminId !== adminId.trim()) {
+          await signOutPortalAccount();
+          setError("Admin ID does not match account record.");
+          return;
+        }
+        if (pinCode && profile.pinCode && profile.pinCode !== pinCode) {
+          await signOutPortalAccount();
+          setError("PINCODE is incorrect.");
+          return;
+        }
+      }
+
+      login({
+        ...profile,
+        token: session.access_token,
       });
       navigate("/dashboard", { replace: true });
-    } catch {
-      setError("Unable to sign in. Please try again.");
+    } catch (submitError) {
+      setError(submitError?.message || "Unable to sign in. Please try again.");
     } finally {
       setIsSubmitting(false);
     }
@@ -136,55 +88,28 @@ function Login({ setIsRegisteringState }) {
   const resetAdminStep = () => {
     setAdminStep("credentials");
     setAdminOtp("");
+    setGeneratedAdminOtp("");
     setAdminOtpMessage("");
-    window.localStorage.removeItem(ADMIN_OTP_STORAGE_KEY);
   };
 
-  const handleRecoverPassword = (e) => {
+  const handleRecoverPassword = async (e) => {
     e.preventDefault();
     setRecoverError("");
     setRecoverMessage("");
 
     try {
-      const accounts = JSON.parse(window.localStorage.getItem(ACCOUNTS_STORAGE_KEY) || "[]");
       const accountRole = role === "health_worker" ? "health_worker" : "patient";
-      const matchedAccount = accounts.find(
-        (account) =>
-          account.role === accountRole &&
-          (
-            accountRole === "patient"
-              ? (account.patientCode === recoverIdentifier || account.patientId === recoverIdentifier || account.email === recoverIdentifier)
-              : (account.workerId === recoverIdentifier || account.email === recoverIdentifier)
-          )
-      );
+      await recoverPasswordWithSecurityAnswer({
+        identifier: recoverIdentifier,
+        role: accountRole,
+        dob,
+        securityQuestion: recoverQuestion,
+        securityAnswer: recoverAnswer,
+      });
 
-      if (!matchedAccount) {
-        setRecoverError(
-          accountRole === "patient"
-            ? "No patient account found for that Patient ID or email."
-            : "No health worker account found for that Health Worker ID or email."
-        );
-        return;
-      }
-
-      if (!matchedAccount.securityQuestion || !matchedAccount.securityAnswer) {
-        setRecoverError("This account does not have a security question yet.");
-        return;
-      }
-
-      if (matchedAccount.securityQuestion !== recoverQuestion) {
-        setRecoverError("Selected question does not match the account's chosen security question.");
-        return;
-      }
-
-      if ((matchedAccount.securityAnswer || "").trim().toLowerCase() !== recoverAnswer.trim().toLowerCase()) {
-        setRecoverError("Incorrect answer. Please try again.");
-        return;
-      }
-
-      setRecoverMessage(`Password recovered successfully. Your password is: ${matchedAccount.password || "(not set)"}`);
-    } catch {
-      setRecoverError("Unable to recover password right now.");
+      setRecoverMessage("Password reset email has been sent. Please check your inbox.");
+    } catch (recoverException) {
+      setRecoverError(recoverException?.message || "Unable to recover password right now.");
     }
   };
 

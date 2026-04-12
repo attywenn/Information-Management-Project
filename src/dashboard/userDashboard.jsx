@@ -7,6 +7,15 @@ import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearSca
 import { QRCodeSVG } from "qrcode.react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faTriangleExclamation, faCalendarDays, faFileMedical, faStethoscope, faBox } from "@fortawesome/free-solid-svg-icons";
+import {
+    bookPatientAppointment,
+    changePortalPassword,
+    completeConsultationRecord,
+    createHealthWorkerAccountByAdmin,
+    deleteHealthWorkerAccountByAdmin,
+    fetchMyInboxMessages,
+    fetchHealthWorkerDirectory,
+} from "../services/supabaseBackendService.js";
 
 ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement);
 
@@ -193,13 +202,6 @@ const getAgeGroupLabel = (age) => {
 const normalizeDiagnosis = (diagnosis) => {
     const value = String(diagnosis || "").trim();
     return value || "Unspecified diagnosis";
-};
-
-const buildHealthWorkerLicenseNumber = (seedText) => {
-    const digits = String(hashText(seedText) % 1000000000).padStart(9, "0");
-    const firstPart = digits.slice(0, 4);
-    const secondPart = digits.slice(4);
-    return `BSP-HW-${firstPart}-${secondPart}`;
 };
 
 const evaluatePasswordStrength = (password) => {
@@ -399,6 +401,7 @@ function UserDashboard() {
 
     const [manageError, setManageError] = useState("");
     const [manageMessage, setManageMessage] = useState("");
+    const [deletingHealthWorkerUserId, setDeletingHealthWorkerUserId] = useState("");
     const [isPatientDirectoryOpen, setIsPatientDirectoryOpen] = useState(false);
     const [lastCreatedLicenseNumber, setLastCreatedLicenseNumber] = useState("");
     const [createdHealthWorkers, setCreatedHealthWorkers] = useState(() =>
@@ -412,6 +415,7 @@ function UserDashboard() {
         surname: "",
         firstname: "",
         middlename: "",
+        dob: "",
         securityQuestion: SECURITY_QUESTIONS[0],
         securityAnswer: "",
     });
@@ -432,6 +436,7 @@ function UserDashboard() {
     const [scheduleError, setScheduleError] = useState("");
     const [showDailyConsultationHistory, setShowDailyConsultationHistory] = useState(false);
     const [inboxMessages, setInboxMessages] = useState(() => loadStoredJson(STORAGE_KEYS.inboxMessages, []));
+    const [adminInboxMessages, setAdminInboxMessages] = useState([]);
     const [activeInboxMessage, setActiveInboxMessage] = useState(null);
     const [qrModalAppointment, setQrModalAppointment] = useState(null);
     const [consultationScanValue, setConsultationScanValue] = useState("");
@@ -464,12 +469,34 @@ function UserDashboard() {
     });
     const [settingsMessage, setSettingsMessage] = useState("");
     const [settingsError, setSettingsError] = useState("");
+    const [passwordForm, setPasswordForm] = useState({
+        currentPassword: "",
+        newPassword: "",
+        confirmNewPassword: "",
+        reason: "",
+    });
+    const [passwordChangeSubmitting, setPasswordChangeSubmitting] = useState(false);
     const [deleteModalOpen, setDeleteModalOpen] = useState(false);
     const [deletePassword, setDeletePassword] = useState("");
     const [deleteError, setDeleteError] = useState("");
     const [currentDateTime, setCurrentDateTime] = useState(() => new Date());
     const visibleInboxMessages = useMemo(() => getVisibleInboxMessages(inboxMessages, user), [inboxMessages, user]);
-    const activeVisibleInboxMessage = activeInboxMessage && visibleInboxMessages.some((message) => message.id === activeInboxMessage.id)
+    const visibleAdminInboxMessages = useMemo(() => {
+        if (user?.role !== "admin") {
+            return [];
+        }
+
+        return adminInboxMessages.map((message) => ({
+            id: message.id,
+            label: message.subject || "Notification",
+            body: message.body || "",
+            createdAt: message.created_at
+                ? new Date(message.created_at).toLocaleString("en-PH")
+                : "",
+        }));
+    }, [adminInboxMessages, user?.role]);
+    const inboxItemsForActiveSelection = user?.role === "admin" ? visibleAdminInboxMessages : visibleInboxMessages;
+    const activeVisibleInboxMessage = activeInboxMessage && inboxItemsForActiveSelection.some((message) => message.id === activeInboxMessage.id)
         ? activeInboxMessage
         : null;
 
@@ -707,6 +734,49 @@ function UserDashboard() {
         };
     }, []);
 
+    useEffect(() => {
+        if (user?.role !== "admin") return;
+
+        let alive = true;
+        fetchHealthWorkerDirectory()
+            .then((workers) => {
+                if (alive) {
+                    setManageError("");
+                    setCreatedHealthWorkers(workers);
+                }
+            })
+            .catch((loadError) => {
+                if (alive) {
+                    setManageError(loadError?.message || "Unable to load health worker accounts.");
+                }
+            });
+
+        return () => {
+            alive = false;
+        };
+    }, [user?.role]);
+
+    useEffect(() => {
+        if (user?.role !== "admin") return;
+
+        let alive = true;
+        fetchMyInboxMessages()
+            .then((messages) => {
+                if (alive) {
+                    setAdminInboxMessages(messages);
+                }
+            })
+            .catch(() => {
+                if (alive) {
+                    setAdminInboxMessages([]);
+                }
+            });
+
+        return () => {
+            alive = false;
+        };
+    }, [user?.role]);
+
     const stopQrScanner = () => {
         if (scannerIntervalRef.current) {
             window.clearInterval(scannerIntervalRef.current);
@@ -799,27 +869,28 @@ function UserDashboard() {
             setManageError("Security answer is required.");
             return;
         }
+        if (!manageForm.dob) {
+            setManageError("Birthdate is required.");
+            return;
+        }
 
         try {
             await new Promise((resolve) => setTimeout(resolve, 250));
 
-            const accounts = loadStoredJson(STORAGE_KEYS.accounts, []);
-            const normalizedUsername = manageForm.username.trim().toLowerCase();
-            const normalizedEmail = manageForm.email.trim().toLowerCase();
-            const hasDuplicate = accounts.some(
-                (account) =>
-                    String(account.username || "").toLowerCase() === normalizedUsername ||
-                    String(account.email || "").toLowerCase() === normalizedEmail
-            );
+            const securityQuestionId = SECURITY_QUESTIONS.findIndex((question) => question === manageForm.securityQuestion) + 1;
+            const createdWorker = await createHealthWorkerAccountByAdmin({
+                username: manageForm.username.trim(),
+                email: manageForm.email.trim(),
+                password: manageForm.password,
+                surname: manageForm.surname.trim(),
+                firstname: manageForm.firstname.trim(),
+                middlename: manageForm.middlename.trim(),
+                dob: manageForm.dob,
+                securityQuestionId: securityQuestionId > 0 ? securityQuestionId : 1,
+                securityAnswer: manageForm.securityAnswer.trim(),
+            });
 
-            if (hasDuplicate) {
-                setManageError("Username or email already exists.");
-                return;
-            }
-
-            const licenseNumber = buildHealthWorkerLicenseNumber(
-                `${manageForm.username}-${manageForm.email}-${Date.now()}`
-            );
+            const licenseNumber = createdWorker.licenseNumber;
 
             const workerAccount = {
                 role: "health_worker",
@@ -829,17 +900,24 @@ function UserDashboard() {
                 surname: manageForm.surname.trim(),
                 firstname: manageForm.firstname.trim(),
                 middlename: manageForm.middlename.trim(),
+                dob: manageForm.dob,
                 displayName: `${manageForm.firstname} ${manageForm.surname}`.trim() || manageForm.username.trim(),
                 workerId: licenseNumber,
                 systemLicenseNumber: licenseNumber,
                 securityQuestion: manageForm.securityQuestion,
                 securityAnswer: manageForm.securityAnswer.trim(),
+                userId: createdWorker.userId || "",
                 createdAt: new Date().toISOString(),
             };
 
-            const nextAccounts = [...accounts, workerAccount];
-            window.localStorage.setItem(STORAGE_KEYS.accounts, JSON.stringify(nextAccounts));
-            setCreatedHealthWorkers(nextAccounts.filter((account) => account.role === "health_worker"));
+            setCreatedHealthWorkers((prev) => [
+                workerAccount,
+                ...prev.filter(
+                    (account) =>
+                        String(account.username || "").toLowerCase() !== String(workerAccount.username || "").toLowerCase() &&
+                        String(account.email || "").toLowerCase() !== String(workerAccount.email || "").toLowerCase()
+                ),
+            ]);
             setLastCreatedLicenseNumber(licenseNumber);
             setManageMessage(`Health worker account created. License Number: ${licenseNumber}`);
 
@@ -851,11 +929,39 @@ function UserDashboard() {
                 surname: "",
                 firstname: "",
                 middlename: "",
+                dob: "",
                 securityQuestion: SECURITY_QUESTIONS[0],
                 securityAnswer: "",
             });
-        } catch {
-            setManageError("Unable to save account.");
+        } catch (manageSubmitError) {
+            setManageError(manageSubmitError?.message || "Unable to save account.");
+        }
+    };
+
+    const handleDeleteHealthWorker = async (account) => {
+        setManageError("");
+        setManageMessage("");
+
+        if (!account?.userId) {
+            setManageError("Unable to delete account: missing user identifier.");
+            return;
+        }
+
+        const confirmed = window.confirm("Are you sure to delete?");
+        if (!confirmed) {
+            return;
+        }
+
+        setDeletingHealthWorkerUserId(account.userId);
+        try {
+            await deleteHealthWorkerAccountByAdmin({ userId: account.userId });
+
+            setCreatedHealthWorkers((prev) => prev.filter((worker) => worker.userId !== account.userId));
+            setManageMessage("Health worker account deleted successfully.");
+        } catch (deleteError) {
+            setManageError(deleteError?.message || "Unable to delete health worker account.");
+        } finally {
+            setDeletingHealthWorkerUserId("");
         }
     };
 
@@ -1400,6 +1506,61 @@ function UserDashboard() {
             }
         };
 
+        const handleChangePassword = async (e) => {
+            e.preventDefault();
+            setSettingsError("");
+            setSettingsMessage("");
+
+            if (!passwordForm.currentPassword) {
+                setSettingsError("Current password is required.");
+                return;
+            }
+
+            const passwordRuleError = validateHealthWorkerPassword(passwordForm.newPassword);
+            if (passwordRuleError) {
+                setSettingsError(passwordRuleError);
+                return;
+            }
+
+            if (passwordForm.newPassword !== passwordForm.confirmNewPassword) {
+                setSettingsError("New password and confirm password do not match.");
+                return;
+            }
+
+            if (!isAdmin && !passwordForm.reason.trim()) {
+                setSettingsError("Reason for change password is required.");
+                return;
+            }
+
+            setPasswordChangeSubmitting(true);
+            try {
+                await changePortalPassword({
+                    role: user?.role,
+                    currentPassword: passwordForm.currentPassword,
+                    newPassword: passwordForm.newPassword,
+                    confirmNewPassword: passwordForm.confirmNewPassword,
+                    reason: passwordForm.reason,
+                });
+
+                if (isAdmin) {
+                    const latestMessages = await fetchMyInboxMessages();
+                    setAdminInboxMessages(latestMessages);
+                }
+
+                setPasswordForm({
+                    currentPassword: "",
+                    newPassword: "",
+                    confirmNewPassword: "",
+                    reason: "",
+                });
+                setSettingsMessage("Password changed successfully.");
+            } catch (changePasswordError) {
+                setSettingsError(changePasswordError?.message || "Unable to change password.");
+            } finally {
+                setPasswordChangeSubmitting(false);
+            }
+        };
+
         const openDeleteModal = () => {
             setDeletePassword("");
             setDeleteError("");
@@ -1599,6 +1760,79 @@ function UserDashboard() {
                             className="rounded-xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-800"
                         >
                             Save Settings
+                        </button>
+                    </div>
+                </form>
+
+                <form onSubmit={handleChangePassword} className={`rounded-2xl shadow-sm border p-6 space-y-4 ${panelClass}`}>
+                    <div>
+                        <h2 className="text-lg font-bold">Change Password</h2>
+                        <p className={`text-sm mt-1 ${mutedClass}`}>Update your account password securely.</p>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label className={`block text-sm font-semibold mb-1 ${mutedClass}`}>Current Password</label>
+                            <input
+                                type="password"
+                                value={passwordForm.currentPassword}
+                                onChange={(e) =>
+                                    setPasswordForm((previous) => ({ ...previous, currentPassword: e.target.value }))
+                                }
+                                className={inputClass}
+                                required
+                            />
+                        </div>
+                        <div>
+                            <label className={`block text-sm font-semibold mb-1 ${mutedClass}`}>New Password</label>
+                            <input
+                                type="password"
+                                value={passwordForm.newPassword}
+                                onChange={(e) =>
+                                    setPasswordForm((previous) => ({ ...previous, newPassword: e.target.value }))
+                                }
+                                className={inputClass}
+                                required
+                            />
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div>
+                            <label className={`block text-sm font-semibold mb-1 ${mutedClass}`}>Confirm New Password</label>
+                            <input
+                                type="password"
+                                value={passwordForm.confirmNewPassword}
+                                onChange={(e) =>
+                                    setPasswordForm((previous) => ({ ...previous, confirmNewPassword: e.target.value }))
+                                }
+                                className={inputClass}
+                                required
+                            />
+                        </div>
+                        {!isAdmin && (
+                            <div>
+                                <label className={`block text-sm font-semibold mb-1 ${mutedClass}`}>Reason for Change Password</label>
+                                <input
+                                    type="text"
+                                    value={passwordForm.reason}
+                                    onChange={(e) =>
+                                        setPasswordForm((previous) => ({ ...previous, reason: e.target.value }))
+                                    }
+                                    className={inputClass}
+                                    required
+                                />
+                            </div>
+                        )}
+                    </div>
+
+                    <div>
+                        <button
+                            type="submit"
+                            disabled={passwordChangeSubmitting}
+                            className="rounded-xl bg-brand-red px-5 py-3 text-sm font-semibold text-white hover:bg-brand-dark disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                            {passwordChangeSubmitting ? "Changing Password..." : "Change Password"}
                         </button>
                     </div>
                 </form>
@@ -1806,6 +2040,20 @@ function UserDashboard() {
                         </div>
                     </div>
 
+                    <div>
+                        <label className={labelClass} htmlFor="hw-dob">Birthdate</label>
+                        <input
+                            id="hw-dob"
+                            type="date"
+                            className={inputClass}
+                            value={manageForm.dob}
+                            onChange={(e) =>
+                                setManageForm((f) => ({ ...f, dob: e.target.value }))
+                            }
+                            required
+                        />
+                    </div>
+
                     <hr className="border-slate-100" />
 
                     <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4">
@@ -1870,6 +2118,16 @@ function UserDashboard() {
                                         <p className="text-xs text-slate-600 mt-1">Username: {account.username || "N/A"}</p>
                                         <p className="text-xs text-slate-600">Email: {account.email || "N/A"}</p>
                                         <p className="text-xs font-bold text-brand-red mt-1">License Number: {account.systemLicenseNumber || account.workerId || "N/A"}</p>
+                                        <div className="mt-3">
+                                            <button
+                                                type="button"
+                                                className="px-3 py-2 text-xs font-semibold rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-60 disabled:cursor-not-allowed"
+                                                onClick={() => handleDeleteHealthWorker(account)}
+                                                disabled={deletingHealthWorkerUserId === account.userId}
+                                            >
+                                                {deletingHealthWorkerUserId === account.userId ? "Deleting..." : "Delete Account"}
+                                            </button>
+                                        </div>
                                     </article>
                                 ))}
                         </div>
@@ -1972,7 +2230,7 @@ function UserDashboard() {
             });
         };
 
-        const handleBookSchedule = (e) => {
+        const handleBookSchedule = async (e) => {
             e.preventDefault();
             setScheduleError("");
             setAppointmentMessage("");
@@ -2013,7 +2271,24 @@ function UserDashboard() {
             const patientName = buildPatientDisplayName(user);
             const patientCode = user?.patientCode || buildPatientCode(user?.username || patientName);
             const qrValue = patientCode;
-            const appointmentId = `${selectedDateKey}-${selectedTimeSlot}-${Date.now()}`;
+            let appointmentId = `${selectedDateKey}-${selectedTimeSlot}-${Date.now()}`;
+
+            try {
+                const persistedAppointmentId = await bookPatientAppointment({
+                    scheduledDate: selectedDateKey,
+                    timeSlot: selectedTimeSlot,
+                    symptoms: selectedSymptoms,
+                    otherSymptom: otherSymptomText || null,
+                });
+
+                if (persistedAppointmentId) {
+                    appointmentId = persistedAppointmentId;
+                }
+            } catch (bookingError) {
+                setScheduleError(bookingError?.message || "Unable to save appointment in backend.");
+                return;
+            }
+
             const bookedAppointment = {
                 id: appointmentId,
                 patientName,
@@ -2446,7 +2721,7 @@ function UserDashboard() {
             reader.readAsDataURL(file);
         };
 
-        const completeConsultation = (e) => {
+        const completeConsultation = async (e) => {
             e.preventDefault();
             setConsultationError("");
             setConsultationMessage("");
@@ -2491,10 +2766,31 @@ function UserDashboard() {
             }
 
             const durationSeconds = Math.max(1, consultationElapsedSeconds);
-
             const completedAt = new Date().toISOString();
+            let consultationRecordId = `${consultationTarget.id}-consulted`;
+
+            try {
+                const persistedConsultationId = await completeConsultationRecord({
+                    appointmentId: consultationTarget.id,
+                    diagnosis,
+                    note,
+                    startedAt: consultationStartedAt,
+                    completedAt,
+                    proofImageUrl: consultationForm.proofImageDataUrl,
+                    medicineItemId: selectedMedicine.id,
+                    medicineQuantity: quantity,
+                });
+
+                if (persistedConsultationId) {
+                    consultationRecordId = persistedConsultationId;
+                }
+            } catch (completeError) {
+                setConsultationError(completeError?.message || "Unable to save consultation in backend.");
+                return;
+            }
+
             const consultationRecord = {
-                id: `${consultationTarget.id}-consulted`,
+                id: consultationRecordId,
                 appointmentId: consultationTarget.id,
                 patientName: consultationTarget.patientName,
                 patientCode: consultationTarget.patientCode,
@@ -3019,16 +3315,21 @@ function UserDashboard() {
     };
 
     const renderInbox = () => {
-        if (user?.role !== "patient") {
+        if (user?.role !== "patient" && user?.role !== "admin") {
             return (
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-2">
                     <h1 className="text-3xl font-bold text-slate-900 mb-1">Inbox</h1>
-                    <p className="text-slate-600">This section is private to patient accounts.</p>
+                    <p className="text-slate-600">This section is available for patient and admin accounts.</p>
                 </div>
             );
         }
 
-        if (visibleInboxMessages.length === 0) {
+        const inboxItems = user?.role === "admin" ? visibleAdminInboxMessages : visibleInboxMessages;
+        const inboxDescription = user?.role === "admin"
+            ? "Security and system notifications."
+            : "Appointment reminders and notifications.";
+
+        if (inboxItems.length === 0) {
             return (
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
                     <h1 className="text-3xl font-bold text-slate-900 mb-2">Inbox</h1>
@@ -3041,9 +3342,9 @@ function UserDashboard() {
             <div className="space-y-4">
                 <div>
                     <h1 className="text-3xl font-bold text-slate-900 mb-2">Inbox</h1>
-                    <p className="text-slate-600">Appointment reminders and notifications.</p>
+                    <p className="text-slate-600">{inboxDescription}</p>
                 </div>
-                {visibleInboxMessages.map((message) => (
+                {inboxItems.map((message) => (
                     <button
                         key={message.id}
                         type="button"

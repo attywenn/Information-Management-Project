@@ -32,6 +32,7 @@ function DashboardNavigation() {
 
     if (user?.role === "admin") {
         tabs.splice(3, 0, { label: "Manage Accounts", path: "/manage-accounts", icon: faUsers });
+        tabs.splice(4, 0, { label: "Inbox", path: "/inbox", icon: faInbox });
     }
 
     if (user?.role === "health_worker") {

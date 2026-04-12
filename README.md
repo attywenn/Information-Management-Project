@@ -1,17 +1,66 @@
-# React + Vite
+# Information Management Project
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Barangay San Perfecto health information system built with React + Vite and Supabase.
 
-Currently, two official plugins are available:
+## Tech Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- Frontend: React, Vite, React Router, Tailwind, Chart.js
+- Backend: Supabase (Postgres, Auth, RLS, Edge Functions)
 
-## React Compiler
+## Local App Setup
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+1. Install dependencies:
 
-## Expanding the ESLint configuration
+```bash
+npm install
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
-# Information-Management-Project
+2. Create `.env` from `.env.example` and set your Supabase values:
+
+```bash
+VITE_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+VITE_SUPABASE_PUBLISHABLE_DEFAULT_KEY=YOUR_SUPABASE_ANON_KEY
+```
+
+3. Run frontend:
+
+```bash
+npm run dev
+```
+
+## Supabase Backend Setup
+
+Backend assets are in [supabase/README.md](supabase/README.md).
+
+Quick steps:
+
+1. Link Supabase project:
+
+```bash
+supabase login
+supabase link --project-ref YOUR_PROJECT_REF
+```
+
+2. Apply normalized schema and RLS policies:
+
+```bash
+supabase db push
+```
+
+3. Set function secrets and deploy the admin account-creation function:
+
+```bash
+supabase secrets set SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
+supabase secrets set SUPABASE_ANON_KEY=YOUR_ANON_KEY
+supabase secrets set SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
+supabase functions deploy create-health-worker-account
+```
+
+## Included Backend Features
+
+- Normalized relational schema with foreign keys for all major domains
+- Supabase Auth with role-aware profile sync trigger (`auth.users` -> app tables)
+- JWT-aware role helpers and RLS policies per table
+- RPCs for login identifier lookup, booking, consultation completion, inbox creation
+- Inventory movement model with balance trigger and stock validation
+- Analytics views for attendance and top diagnosis by age group

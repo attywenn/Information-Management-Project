@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { AuthContext } from "./authContextValue.js";
+import { signOutPortalAccount } from "../services/supabaseBackendService.js";
 
 export function AuthProvider({ children }) {
   const [authState, setAuthState] = useState(() => {
@@ -43,10 +44,16 @@ export function AuthProvider({ children }) {
     });
   };
 
-  const logout = () => {
+  const logout = async () => {
     setAuthState({ isLoggedIn: false, user: null, token: null });
 
     window.localStorage.removeItem("auth");
+
+    try {
+      await signOutPortalAccount();
+    } catch {
+      // Ignore sign-out edge cases to avoid blocking UI logout.
+    }
   };
 
   return (

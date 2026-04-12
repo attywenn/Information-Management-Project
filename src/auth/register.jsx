@@ -1,6 +1,6 @@
 import { useState } from "react";
+import { lookupLoginIdentity, registerPatientAccount } from "../services/supabaseBackendService.js";
 
-const ACCOUNTS_STORAGE_KEY = "sanperfecto-accounts";
 const SECURITY_QUESTIONS = [
     "Name of your cat",
     "Favorite actor/actress",
@@ -11,20 +11,6 @@ const SECURITY_QUESTIONS = [
 
 const KEYBOARD_SPECIAL_CHAR_PATTERN = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]/;
 const KEYBOARD_ALLOWED_PATTERN = /^[A-Za-z0-9!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]+$/;
-
-const hashText = (text) => {
-    let hash = 0;
-    for (let i = 0; i < text.length; i += 1) {
-        hash = (hash << 5) - hash + text.charCodeAt(i);
-        hash |= 0;
-    }
-    return Math.abs(hash);
-};
-
-const buildPatientCode = (seedText) => {
-    const digits = String(hashText(seedText) % 1000000000000).padStart(12, "0");
-    return `PATIENT${digits}`;
-};
 
 const evaluatePasswordStrength = (password) => {
     const safe = String(password || "");
@@ -101,63 +87,32 @@ function Register({ setIsRegisteringState }) {
             return;
         }
 
-        const normalizedUsername = username.trim().toLowerCase();
-        const normalizedEmail = email.trim().toLowerCase();
-        const existingAccounts = JSON.parse(window.localStorage.getItem(ACCOUNTS_STORAGE_KEY) || "[]");
-        const hasDuplicateIdentity = existingAccounts.some(
-            (account) =>
-                String(account.username || "").trim().toLowerCase() === normalizedUsername ||
-                String(account.email || "").trim().toLowerCase() === normalizedEmail
-        );
-
-        if (hasDuplicateIdentity) {
-            setError("Username or email already exists.");
-            return;
-        }
-
         setIsSubmitting(true);
 
         try {
-            // Frontend-only mode: keep UX flow without sending data to backend.
-            await new Promise((resolve) => setTimeout(resolve, 350));
-
-            const displayName = `${firstname} ${surname}`.trim() || username;
-            const patientCode = buildPatientCode(`${username}-${dob}-${contactNumber}`);
-            const fixedAddress = {
-                region: "NCR",
-                province: "METRO MANILA",
-                city: "SAN JUAN CITY",
-                barangay: "BARANGAY SAN PERFECTO",
+            await registerPatientAccount({
+                username,
+                email,
+                password,
+                surname,
+                firstname,
+                middlename,
+                dob,
                 houseNumber,
                 street,
                 purokSubdivision,
-            };
-            const fullAddress = `${houseNumber}, ${street}, ${purokSubdivision}, BARANGAY SAN PERFECTO, SAN JUAN CITY, METRO MANILA, NCR`;
-            const storedAccounts = JSON.parse(window.localStorage.getItem(ACCOUNTS_STORAGE_KEY) || "[]");
-            const nextAccounts = [
-                ...storedAccounts,
-                {
-                    username: username.trim(),
-                    email: email.trim(),
-                    role: "patient",
-                    displayName,
-                    patientCode,
-                    patientId: patientCode,
-                    surname,
-                    firstname,
-                    middlename,
-                    dob,
-                    address: fixedAddress,
-                    fullAddress,
-                    contactNumber,
-                    password,
-                    securityQuestion,
-                    securityAnswer: securityAnswer.trim(),
-                },
-            ];
-            window.localStorage.setItem(ACCOUNTS_STORAGE_KEY, JSON.stringify(nextAccounts));
+                securityQuestion,
+                securityAnswer,
+                contactNumber,
+            });
 
-            setSuccess(`Registration saved locally for UI testing. Your Patient ID is ${patientCode}.`);
+            const loginLookup = await lookupLoginIdentity({ identifier: email, role: "patient", dob });
+            const patientCode = loginLookup?.patient_code || "";
+            setSuccess(
+                patientCode
+                    ? `Registration saved successfully. Your Patient ID is ${patientCode}.`
+                    : "Registration saved successfully. Please sign in to continue."
+            );
             setUsername("");
             setEmail("");
             setPassword("");
@@ -173,8 +128,8 @@ function Register({ setIsRegisteringState }) {
             setSecurityAnswer("");
             setContactNumber("");
             setTimeout(() => setIsRegisteringState(true), 1500);
-        } catch {
-            setError("Unable to complete registration. Please try again.");
+        } catch (submitError) {
+            setError(submitError?.message || "Unable to complete registration. Please try again.");
         } finally {
             setIsSubmitting(false);
         }
