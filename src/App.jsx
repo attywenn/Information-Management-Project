@@ -63,7 +63,6 @@ function AppContent() {
     <Routes>
       {[
         "/dashboard",
-        "/profile",
         "/schedules",
         "/history",
         "/consultation",

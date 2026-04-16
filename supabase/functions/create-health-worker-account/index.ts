@@ -8,6 +8,7 @@ const corsHeaders = {
 
 const keyboardSpecialCharPattern = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]/;
 const keyboardAllowedPattern = /^[A-Za-z0-9!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]+$/;
+const allowedSexOptions = ["Male", "Female", "Prefer not to say"];
 
 const jsonResponse = (status: number, payload: Record<string, unknown>) =>
   new Response(JSON.stringify(payload), {
@@ -24,6 +25,42 @@ const isValidPassword = (password: string) => {
   if (!/[A-Z]/.test(password)) return false;
   if (!keyboardSpecialCharPattern.test(password)) return false;
   return true;
+};
+
+const buildUsernameBase = (email: string) => {
+  const localPart = String(email || "")
+    .trim()
+    .toLowerCase()
+    .split("@")[0]
+    .replace(/[^a-z0-9._-]/g, "")
+    .slice(0, 24);
+  return localPart || "user";
+};
+
+const generateUniqueInternalUsername = async (
+  adminClient: ReturnType<typeof createClient>,
+  email: string,
+) => {
+  const base = buildUsernameBase(email);
+
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const suffix = attempt === 0
+      ? Date.now().toString(36)
+      : `${Date.now().toString(36)}${crypto.randomUUID().replace(/-/g, "").slice(0, 4)}`;
+    const candidate = `u_${base}_${suffix}`;
+
+    const { data: existingByUsername } = await adminClient
+      .from("profiles")
+      .select("id")
+      .eq("username", candidate)
+      .maybeSingle();
+
+    if (!existingByUsername) {
+      return candidate;
+    }
+  }
+
+  return `u_${base}_${crypto.randomUUID().replace(/-/g, "")}`;
 };
 
 Deno.serve(async (req) => {
@@ -93,18 +130,23 @@ Deno.serve(async (req) => {
     return jsonResponse(400, { error: "Invalid JSON payload." });
   }
 
-  const username = String(body.username || "").trim().toLowerCase();
   const email = String(body.email || "").trim().toLowerCase();
   const password = String(body.password || "");
   const surname = String(body.surname || "").trim();
   const firstname = String(body.firstname || "").trim();
   const middlename = String(body.middlename || "").trim();
   const dob = String(body.dob || "").trim();
+  const sex = String(body.sex || "").trim();
+  const gender = String(body.gender || "").trim();
   const securityQuestionId = Number(body.securityQuestionId);
   const securityAnswer = String(body.securityAnswer || "").trim();
 
-  if (!username || !email || !password || !surname || !firstname || !dob || !securityAnswer) {
+  if (!email || !password || !surname || !firstname || !dob || !sex || !gender || !securityAnswer) {
     return jsonResponse(400, { error: "Missing required fields." });
+  }
+
+  if (!allowedSexOptions.includes(sex)) {
+    return jsonResponse(400, { error: "Invalid sex option." });
   }
 
   if (Number.isNaN(new Date(dob).getTime())) {
@@ -125,13 +167,15 @@ Deno.serve(async (req) => {
   const { data: duplicateAccount } = await adminClient
     .from("profiles")
     .select("id")
-    .or(`username.eq.${username},email.eq.${email}`)
+    .eq("email", email)
     .limit(1)
     .maybeSingle();
 
   if (duplicateAccount) {
-    return jsonResponse(409, { error: "Username or email already exists." });
+    return jsonResponse(409, { error: "Email already exists." });
   }
+
+  const internalUsername = await generateUniqueInternalUsername(adminClient, email);
 
   const { data: generatedLicense, error: generatedLicenseError } = await adminClient.rpc(
     "generate_health_worker_license",
@@ -150,12 +194,14 @@ Deno.serve(async (req) => {
     app_metadata: { app_role: "health_worker" },
     user_metadata: {
       app_role: "health_worker",
-      username,
+      username: internalUsername,
       display_name: `${firstname} ${surname}`.trim(),
       surname,
       firstname,
       middlename,
       dob,
+      sex,
+      gender,
       license_number: licenseNumber,
       security_question_id: securityQuestionId,
       security_answer: securityAnswer,
@@ -170,7 +216,6 @@ Deno.serve(async (req) => {
 
   return jsonResponse(200, {
     userId: createdUserData.user.id,
-    username,
     email,
     licenseNumber,
   });

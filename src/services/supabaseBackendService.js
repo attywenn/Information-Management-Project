@@ -77,6 +77,146 @@ const normalizePagination = ({ page = 1, pageSize = DEFAULT_PAGE_SIZE } = {}) =>
 const AVATAR_BUCKET = "avatars";
 const AVATAR_MAX_SIZE = 5 * 1024 * 1024; // 5MB
 const AVATAR_ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp"];
+const AVATAR_TARGET_SIZE = 300 * 1024; // 300KB
+const AVATAR_MAX_DIMENSION = 1200;
+const AVATAR_UPDATE_COOLDOWN_DAYS = 7;
+const ADDRESS_UPDATE_COOLDOWN_DAYS = 30;
+
+const AVATAR_EXT_BY_MIME_TYPE = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+};
+
+const buildInternalUsernameFromEmail = (email) => {
+  const localPart = String(email || "")
+    .trim()
+    .toLowerCase()
+    .split("@")[0]
+    .replace(/[^a-z0-9._-]/g, "")
+    .slice(0, 24);
+  const base = localPart || "user";
+  const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+  return `u_${base}_${suffix}`;
+};
+
+const daysUntilAllowed = (lastIso, cooldownDays) => {
+  if (!lastIso) return 0;
+  const lastDate = new Date(lastIso);
+  if (Number.isNaN(lastDate.getTime())) return 0;
+
+  const msElapsed = Date.now() - lastDate.getTime();
+  const cooldownMs = cooldownDays * 24 * 60 * 60 * 1000;
+  if (msElapsed >= cooldownMs) return 0;
+
+  return Math.ceil((cooldownMs - msElapsed) / (24 * 60 * 60 * 1000));
+};
+
+const normalizeAddressPart = (value) => String(value || "").trim().toLowerCase();
+
+const fileToDataUrl = (file) =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("Failed to read selected image."));
+    reader.readAsDataURL(file);
+  });
+
+const loadImageFromDataUrl = (dataUrl) =>
+  new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Failed to process selected image."));
+    image.src = dataUrl;
+  });
+
+const canvasToBlob = (canvas, type, quality) =>
+  new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          reject(new Error("Failed to compress selected image."));
+          return;
+        }
+        resolve(blob);
+      },
+      type,
+      quality
+    );
+  });
+
+const compressAvatarImage = async (file) => {
+  if (!(file instanceof File)) {
+    throw new Error("File is required.");
+  }
+
+  if (file.size <= AVATAR_TARGET_SIZE) {
+    return file;
+  }
+
+  const dataUrl = await fileToDataUrl(file);
+  const image = await loadImageFromDataUrl(dataUrl);
+
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d", { alpha: false });
+  if (!context) {
+    throw new Error("Image compression is not supported in this browser.");
+  }
+
+  let width = image.naturalWidth || image.width;
+  let height = image.naturalHeight || image.height;
+  const maxEdge = Math.max(width, height);
+  if (maxEdge > AVATAR_MAX_DIMENSION) {
+    const scale = AVATAR_MAX_DIMENSION / maxEdge;
+    width = Math.max(1, Math.round(width * scale));
+    height = Math.max(1, Math.round(height * scale));
+  }
+
+  let bestBlob = null;
+  const qualitySteps = [0.9, 0.82, 0.74, 0.66, 0.58, 0.5, 0.42];
+
+  // Try a few quality and downscale passes to approach target file size.
+  for (let pass = 0; pass < 4; pass += 1) {
+    canvas.width = width;
+    canvas.height = height;
+    context.clearRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+
+    for (const quality of qualitySteps) {
+      const blob = await canvasToBlob(canvas, "image/webp", quality);
+      if (!bestBlob || blob.size < bestBlob.size) {
+        bestBlob = blob;
+      }
+      if (blob.size <= AVATAR_TARGET_SIZE) {
+        bestBlob = blob;
+        break;
+      }
+    }
+
+    if (bestBlob && bestBlob.size <= AVATAR_TARGET_SIZE) {
+      break;
+    }
+
+    width = Math.max(256, Math.round(width * 0.85));
+    height = Math.max(256, Math.round(height * 0.85));
+  }
+
+  if (!bestBlob) {
+    throw new Error("Failed to compress selected image.");
+  }
+
+  const fileBaseName = String(file.name || "avatar").replace(/\.[^.]+$/, "") || "avatar";
+  const compressedFile = new File([bestBlob], `${fileBaseName}.webp`, {
+    type: "image/webp",
+    lastModified: Date.now(),
+  });
+
+  if (compressedFile.size > AVATAR_TARGET_SIZE) {
+    throw new Error("Unable to compress image to 300KB. Please choose a smaller or simpler photo.");
+  }
+
+  return compressedFile;
+};
 
 export async function uploadProfilePicture(file) {
   if (!file) {
@@ -90,6 +230,8 @@ export async function uploadProfilePicture(file) {
   if (!AVATAR_ALLOWED_TYPES.includes(file.type)) {
     throw new Error("Only JPEG, PNG, and WebP images are allowed.");
   }
+
+  const optimizedFile = await compressAvatarImage(file);
 
   const { data: userData, error: userError } = await supabase.auth.getUser();
   if (userError || !userData.user?.id) {
@@ -110,7 +252,8 @@ export async function uploadProfilePicture(file) {
   }
 
   const userId = userData.user.id;
-  const fileExt = file.name.split(".").pop().toLowerCase();
+  const fallbackExt = String(optimizedFile.name || "").split(".").pop()?.toLowerCase() || "webp";
+  const fileExt = AVATAR_EXT_BY_MIME_TYPE[optimizedFile.type] || fallbackExt;
   const fileName = `${userId}/avatar-${Date.now()}.${fileExt}`;
 
   // Delete old avatar if it exists
@@ -132,7 +275,7 @@ export async function uploadProfilePicture(file) {
   // Upload new avatar
   const { data, error } = await supabase.storage
     .from(AVATAR_BUCKET)
-    .upload(fileName, file, {
+    .upload(fileName, optimizedFile, {
       cacheControl: "3600",
       upsert: false,
     });
@@ -199,14 +342,20 @@ export async function deleteProfilePicture() {
 }
 
 export async function registerPatientAccount(payload) {
+  const normalizedEmail = payload.email.trim().toLowerCase();
+  const internalUsername = buildInternalUsernameFromEmail(normalizedEmail);
+  const displayName = `${payload.firstname || ""} ${payload.surname || ""}`.trim() || normalizedEmail;
+
   const metadata = {
     app_role: "patient",
-    username: payload.username.trim().toLowerCase(),
-    display_name: `${payload.firstname} ${payload.surname}`.trim() || payload.username.trim(),
+    username: internalUsername,
+    display_name: displayName,
     surname: payload.surname.trim(),
     firstname: payload.firstname.trim(),
     middlename: payload.middlename?.trim() || "",
     dob: payload.dob || "",
+    sex: String(payload.sex || "Prefer not to say").trim(),
+    gender: String(payload.gender || "Prefer not to say").trim(),
     contact_number: payload.contactNumber?.trim() || "",
     region: "NCR",
     province: "METRO MANILA",
@@ -220,7 +369,7 @@ export async function registerPatientAccount(payload) {
   };
 
   const { data, error } = await supabase.auth.signUp({
-    email: payload.email.trim().toLowerCase(),
+    email: normalizedEmail,
     password: payload.password,
     options: {
       data: metadata,
@@ -269,6 +418,41 @@ export async function getMyProfileBundle() {
     throw new Error("Authenticated profile not found.");
   }
 
+  let resolvedAddress = null;
+  if (data.addressId) {
+    const { data: addressRow, error: addressError } = await supabase
+      .from("addresses")
+      .select("id, region, province, city, barangay, house_number, street, purok_subdivision")
+      .eq("id", data.addressId)
+      .maybeSingle();
+
+    if (!addressError && addressRow) {
+      resolvedAddress = {
+        id: addressRow.id,
+        region: addressRow.region || "",
+        province: addressRow.province || "",
+        city: addressRow.city || "",
+        barangay: addressRow.barangay || "",
+        houseNumber: addressRow.house_number || "",
+        street: addressRow.street || "",
+        streetName: addressRow.street || "",
+        purokSubdivision: addressRow.purok_subdivision || "",
+      };
+    }
+  }
+
+  const addressParts = [
+    resolvedAddress?.houseNumber || "",
+    resolvedAddress?.street || "",
+    resolvedAddress?.purokSubdivision || "",
+    resolvedAddress?.barangay || "",
+    resolvedAddress?.city || "",
+    resolvedAddress?.province || "",
+    resolvedAddress?.region || "",
+  ].filter(Boolean);
+
+  const fullAddress = addressParts.join(", ");
+
   return {
     id: data.id,
     role: data.role,
@@ -282,9 +466,18 @@ export async function getMyProfileBundle() {
     systemLicenseNumber: data.workerId || "",
     adminId: data.adminId || "",
     addressId: data.addressId || null,
+    address: resolvedAddress || {},
+    lastAvatarUpdatedAt: data.lastAvatarUpdatedAt || null,
+    lastAddressUpdatedAt: data.lastAddressUpdatedAt || null,
+    houseNumber: resolvedAddress?.houseNumber || "",
+    streetName: resolvedAddress?.streetName || "",
+    purokSubdivision: resolvedAddress?.purokSubdivision || "",
+    fullAddress,
     surname: data.surname || "",
     firstname: data.firstname || "",
     middlename: data.middlename || "",
+    sex: data.sex || "",
+    gender: data.gender || "",
     dob: data.dob || "",
     contactNumber: data.contactNumber || "",
     pinCode: data.pinCode || "",
@@ -327,8 +520,10 @@ export async function signInPortalAccount({ identifier, password, role, dob }) {
 
   const profile = await getMyProfileBundle();
   const profileDob = normalizeDobValue(profile.dob);
+  const authMetadataDob = normalizeDobValue(data.user?.user_metadata?.dob);
+  const dobToVerify = role === "admin" ? (authMetadataDob || profileDob) : profileDob;
 
-  if (!profileDob || profileDob !== normalizedDob) {
+  if (!dobToVerify || dobToVerify !== normalizedDob) {
     await supabase.auth.signOut();
     throw new Error("Birthdate does not match this account.");
   }
@@ -752,7 +947,7 @@ export async function fetchPatientDirectory(options = {}) {
 
   const { data: patientRows, error: patientError } = await supabase
     .from("patient_profiles")
-    .select("user_id, patient_code, surname, firstname, middlename, dob, contact_number, address_id, created_at, updated_at")
+    .select("user_id, patient_code, surname, firstname, middlename, dob, sex, gender, contact_number, address_id, created_at, updated_at")
     .order("created_at", { ascending: false })
     .range(from, to);
 
@@ -806,6 +1001,9 @@ export async function fetchPatientDirectory(options = {}) {
       middlename: row.middlename || "",
       dob: row.dob || "",
       contactNumber: row.contact_number || "",
+      phone: row.contact_number || "",
+      sex: row.sex || "",
+      gender: row.gender || "",
       patientCode: row.patient_code || "",
       patientId: row.patient_code || "",
       addressId: row.address_id || null,
@@ -1039,79 +1237,115 @@ export async function updateMyProfileSettingsWithAvatar(payload) {
 
   const userId = userData.user.id;
   const now = new Date().toISOString();
-  let avatarUrl = null;
+  const profileBundle = await getMyProfileBundle();
 
-  // Handle file upload if provided
-  if (payload.avatarFile instanceof File) {
-    const uploadResult = await uploadProfilePicture(payload.avatarFile);
-    avatarUrl = uploadResult.url;
-  } else if (payload.avatarUrl) {
-    // Use provided URL directly (backward compatibility)
-    avatarUrl = payload.avatarUrl;
+  const avatarUrlFromPayload = typeof payload.avatarUrl === "string" ? payload.avatarUrl.trim() : "";
+  const hasAvatarFile = payload.avatarFile instanceof File;
+  const isAvatarChangeRequested = hasAvatarFile || (avatarUrlFromPayload && avatarUrlFromPayload !== (profileBundle.avatarDataUrl || ""));
+
+  const avatarCooldownDaysLeft = daysUntilAllowed(profileBundle.lastAvatarUpdatedAt, AVATAR_UPDATE_COOLDOWN_DAYS);
+  if (isAvatarChangeRequested && avatarCooldownDaysLeft > 0) {
+    throw new Error(`Profile photo can only be changed every ${AVATAR_UPDATE_COOLDOWN_DAYS} days. Please try again in ${avatarCooldownDaysLeft} day(s).`);
   }
 
-  const profileBundle = await getMyProfileBundle();
-  const displayName = `${payload.firstname || ""} ${payload.surname || ""}`.trim() || profileBundle.displayName || profileBundle.username;
+  // Preserve current avatar by default when no new file/url is provided.
+  let avatarUrl = profileBundle.avatarDataUrl || null;
+
+  // Handle file upload if provided
+  if (hasAvatarFile) {
+    const uploadResult = await uploadProfilePicture(payload.avatarFile);
+    avatarUrl = uploadResult.url;
+  } else if (avatarUrlFromPayload) {
+    // Use provided URL directly (backward compatibility)
+    avatarUrl = avatarUrlFromPayload;
+  }
+
+  const displayName = profileBundle.displayName || profileBundle.username;
+  const profileUpdatePayload = {
+    display_name: displayName,
+    avatar_url: avatarUrl,
+    updated_at: now,
+  };
+
+  if (isAvatarChangeRequested) {
+    profileUpdatePayload.last_avatar_updated_at = now;
+  }
 
   const { error: profileError } = await supabase
     .from("profiles")
-    .update({
-      display_name: displayName,
-      avatar_url: avatarUrl,
-      updated_at: now,
-    })
+    .update(profileUpdatePayload)
     .eq("id", userId);
 
   if (profileError) {
     throw toBackendError(profileError, "Unable to save profile settings.");
   }
 
-  if (profileBundle.role === "patient") {
-    let addressId = profileBundle.addressId || null;
+  const currentAddress = profileBundle.address && typeof profileBundle.address === "object" ? profileBundle.address : {};
+  const nextAddress = {
+    region: String(payload.region || currentAddress.region || "NCR").trim(),
+    province: String(payload.province || currentAddress.province || "METRO MANILA").trim(),
+    city: String(payload.city || currentAddress.city || "SAN JUAN CITY").trim(),
+    barangay: String(payload.barangay || currentAddress.barangay || "BARANGAY SAN PERFECTO").trim(),
+    houseNumber: String(payload.houseNumber || "").trim(),
+    streetName: String(payload.streetName || "").trim(),
+    purokSubdivision: String(payload.purokSubdivision || "").trim(),
+  };
 
-    if (
-      payload.houseNumber ||
-      payload.streetName ||
-      payload.purokSubdivision ||
-      payload.region ||
-      payload.province ||
-      payload.city ||
-      payload.barangay
-    ) {
-      const addressPayload = {
-        region: payload.region || "NCR",
-        province: payload.province || "METRO MANILA",
-        city: payload.city || "SAN JUAN CITY",
-        barangay: payload.barangay || "BARANGAY SAN PERFECTO",
-        house_number: payload.houseNumber || "",
-        street: payload.streetName || "",
-        purok_subdivision: payload.purokSubdivision || "",
-      };
+  const hasAddressInput = [
+    payload.houseNumber,
+    payload.streetName,
+    payload.purokSubdivision,
+    payload.region,
+    payload.province,
+    payload.city,
+    payload.barangay,
+  ].some((value) => String(value || "").trim().length > 0);
 
-      const { data: addressRow, error: addressUpsertError } = await supabase
-        .from("addresses")
-        .upsert(addressPayload, {
-          onConflict: "region,province,city,barangay,house_number,street,purok_subdivision",
-        })
-        .select("id")
-        .single();
+  const isAddressChangeRequested = hasAddressInput && (
+    normalizeAddressPart(currentAddress.region) !== normalizeAddressPart(nextAddress.region) ||
+    normalizeAddressPart(currentAddress.province) !== normalizeAddressPart(nextAddress.province) ||
+    normalizeAddressPart(currentAddress.city) !== normalizeAddressPart(nextAddress.city) ||
+    normalizeAddressPart(currentAddress.barangay) !== normalizeAddressPart(nextAddress.barangay) ||
+    normalizeAddressPart(currentAddress.houseNumber) !== normalizeAddressPart(nextAddress.houseNumber) ||
+    normalizeAddressPart(currentAddress.street || currentAddress.streetName) !== normalizeAddressPart(nextAddress.streetName) ||
+    normalizeAddressPart(currentAddress.purokSubdivision) !== normalizeAddressPart(nextAddress.purokSubdivision)
+  );
 
-      if (addressUpsertError) {
-        throw toBackendError(addressUpsertError, "Unable to save address settings.");
-      }
+  const addressCooldownDaysLeft = daysUntilAllowed(profileBundle.lastAddressUpdatedAt, ADDRESS_UPDATE_COOLDOWN_DAYS);
+  if (isAddressChangeRequested && addressCooldownDaysLeft > 0) {
+    throw new Error(`Address can only be updated every ${ADDRESS_UPDATE_COOLDOWN_DAYS} days. Please try again in ${addressCooldownDaysLeft} day(s).`);
+  }
 
-      addressId = addressRow?.id || addressId;
+  let resolvedAddressId = profileBundle.addressId || null;
+  if (isAddressChangeRequested) {
+    const { data: resolvedAddressFromRpc, error: resolveAddressError } = await supabase.rpc("resolve_address_id", {
+      p_region: nextAddress.region,
+      p_province: nextAddress.province,
+      p_city: nextAddress.city,
+      p_barangay: nextAddress.barangay,
+      p_house_number: nextAddress.houseNumber,
+      p_street: nextAddress.streetName,
+      p_purok_subdivision: nextAddress.purokSubdivision,
+    });
+
+    if (resolveAddressError || !resolvedAddressFromRpc) {
+      throw toBackendError(resolveAddressError, "Unable to save address settings.");
     }
 
+    resolvedAddressId = resolvedAddressFromRpc;
+  }
+
+  if (profileBundle.role === "patient") {
     const { error: patientError } = await supabase
       .from("patient_profiles")
       .update({
-        surname: payload.surname || "",
-        firstname: payload.firstname || "",
-        middlename: payload.middlename || "",
+        surname: profileBundle.surname || "",
+        firstname: profileBundle.firstname || "",
+        middlename: profileBundle.middlename || "",
         dob: payload.dob || null,
         contact_number: payload.contactNumber || null,
-        address_id: addressId,
+        address_id: resolvedAddressId,
+        last_address_updated_at: isAddressChangeRequested ? now : profileBundle.lastAddressUpdatedAt,
         updated_at: now,
       })
       .eq("user_id", userId);
@@ -1122,15 +1356,25 @@ export async function updateMyProfileSettingsWithAvatar(payload) {
   }
 
   if (profileBundle.role === "health_worker") {
+    const workerPayload = {
+      surname: profileBundle.surname || "",
+      firstname: profileBundle.firstname || "",
+      middlename: profileBundle.middlename || "",
+      dob: payload.dob || null,
+      updated_at: now,
+    };
+
+    if (resolvedAddressId) {
+      workerPayload.address_id = resolvedAddressId;
+    }
+
+    if (isAddressChangeRequested) {
+      workerPayload.last_address_updated_at = now;
+    }
+
     const { error: workerError } = await supabase
       .from("health_worker_profiles")
-      .update({
-        surname: payload.surname || "",
-        firstname: payload.firstname || "",
-        middlename: payload.middlename || "",
-        dob: payload.dob || null,
-        updated_at: now,
-      })
+      .update(workerPayload)
       .eq("user_id", userId);
 
     if (workerError) {
@@ -1167,7 +1411,7 @@ export async function fetchPatientAccountDetail(patientUserId, options = {}) {
     // Get patient profile
     const { data: patientProfile, error: patientError } = await supabase
       .from("patient_profiles")
-      .select("user_id, patient_code, surname, firstname, middlename, dob, contact_number, address_id, created_at, updated_at")
+      .select("user_id, patient_code, surname, firstname, middlename, dob, sex, gender, contact_number, address_id, created_at, updated_at")
       .eq("user_id", patientUserId)
       .single();
 
@@ -1198,7 +1442,13 @@ export async function fetchPatientAccountDetail(patientUserId, options = {}) {
     }
 
     return {
-      profile: patientProfile,
+      profile: {
+        ...patientProfile,
+        phone: patientProfile?.contact_number || "",
+        contactNumber: patientProfile?.contact_number || "",
+        avatar_url: profileRow?.avatar_url || "",
+        avatarDataUrl: profileRow?.avatar_url || "",
+      },
       email: profileRow?.email || "",
       consultations: consultations || [],
     };

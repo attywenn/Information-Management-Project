@@ -282,11 +282,15 @@ export default function PatientAccountManagement() {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-600">Phone</label>
-                    <p className="text-gray-800">{patientDetail.profile.phone}</p>
+                    <p className="text-gray-800">{patientDetail.profile.phone || patientDetail.profile.contactNumber || "N/A"}</p>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-600">Date of Birth</label>
                     <p className="text-gray-800">{patientDetail.profile.dob || "N/A"}</p>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-gray-600">Sex</label>
+                    <p className="text-gray-800">{patientDetail.profile.sex || "N/A"}</p>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-600">Gender</label>

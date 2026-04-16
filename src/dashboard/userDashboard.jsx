@@ -3,8 +3,8 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import DashboardNavigation from "../components/dashboardNavigation.jsx";
 import { useAuth } from "../context/useAuth.js";
-import { Pie, Bar } from "react-chartjs-2";
-import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement } from "chart.js";
+import { Bar } from "react-chartjs-2";
+import { Chart as ChartJS, Tooltip, Legend, CategoryScale, LinearScale, BarElement } from "chart.js";
 import { QRCodeSVG } from "qrcode.react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faTriangleExclamation, faCalendarDays, faFileMedical, faStethoscope, faBox } from "@fortawesome/free-solid-svg-icons";
@@ -29,7 +29,7 @@ import {
     fetchPatientAndHealthWorkerStats,
 } from "../services/supabaseBackendService.js";
 
-ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement);
+ChartJS.register(Tooltip, Legend, CategoryScale, LinearScale, BarElement);
 
 const COMMON_SYMPTOMS = [
     "Fever",
@@ -69,15 +69,47 @@ const STORAGE_KEYS = {
 };
 
 const SETTINGS_STORAGE_PREFIX = "sanperfecto-settings";
+const MEDICATION_REMINDER_STORAGE_PREFIX = "sanperfecto-medication-reminder";
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 const AGE_GROUPS = [
-    { label: "Infants (0-2)", min: 0, max: 2 },
-    { label: "Children (3-12)", min: 3, max: 12 },
-    { label: "Adolescents (13-17)", min: 13, max: 17 },
-    { label: "Adults (18-59)", min: 18, max: 59 },
-    { label: "Seniors (60+)", min: 60, max: Number.POSITIVE_INFINITY },
+    {
+        label: "0-18 months (Infant)",
+        matches: ({ ageMonths }) => typeof ageMonths === "number" && ageMonths >= 0 && ageMonths <= 18,
+    },
+    {
+        label: "1.5 to 3 yrs old (Early Childhood)",
+        matches: ({ ageYears, ageMonths }) =>
+            typeof ageYears === "number" &&
+            typeof ageMonths === "number" &&
+            ageYears <= 3 &&
+            ageMonths > 18,
+    },
+    {
+        label: "4-12 (Children)",
+        matches: ({ ageYears }) => typeof ageYears === "number" && ageYears >= 4 && ageYears <= 12,
+    },
+    {
+        label: "13-17 (Young Teenagers)",
+        matches: ({ ageYears }) => typeof ageYears === "number" && ageYears >= 13 && ageYears <= 17,
+    },
+    {
+        label: "18-35 (Young Adults)",
+        matches: ({ ageYears }) => typeof ageYears === "number" && ageYears >= 18 && ageYears <= 35,
+    },
+    {
+        label: "36-59 (Mature Adults)",
+        matches: ({ ageYears }) => typeof ageYears === "number" && ageYears >= 36 && ageYears <= 59,
+    },
+    {
+        label: "60-99 (Senior Citizens)",
+        matches: ({ ageYears }) => typeof ageYears === "number" && ageYears >= 60 && ageYears <= 99,
+    },
+    {
+        label: ">100 (Centenarians)",
+        matches: ({ ageYears }) => typeof ageYears === "number" && ageYears > 100,
+    },
 ];
 
 const SECURITY_QUESTIONS = [
@@ -86,6 +118,23 @@ const SECURITY_QUESTIONS = [
     "Favorite food",
     "Name of your first school",
     "Your childhood nickname",
+];
+
+const SEX_OPTIONS = ["Male", "Female", "Prefer not to say"];
+
+const GENDER_OPTIONS = [
+    "Cisgender Woman",
+    "Cisgender Man",
+    "Transgender Woman",
+    "Transgender Man",
+    "Non-binary",
+    "Genderqueer",
+    "Agender",
+    "Intersex",
+    "Two-Spirit",
+    "Questioning",
+    "Prefer not to say",
+    "Other / Unknown (please specify)",
 ];
 
 const KEYBOARD_SPECIAL_CHAR_PATTERN = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]/;
@@ -211,9 +260,22 @@ const calculateAgeNumber = (dobValue) => {
     return age >= 0 ? age : null;
 };
 
-const getAgeGroupLabel = (age) => {
-    if (typeof age !== "number") return "Unknown age";
-    const matchedGroup = AGE_GROUPS.find((group) => age >= group.min && age <= group.max);
+const calculateAgeInMonths = (dobValue) => {
+    if (!dobValue) return null;
+    const dob = new Date(dobValue);
+    if (Number.isNaN(dob.getTime())) return null;
+
+    const today = new Date();
+    let months = (today.getFullYear() - dob.getFullYear()) * 12 + (today.getMonth() - dob.getMonth());
+    if (today.getDate() < dob.getDate()) {
+        months -= 1;
+    }
+
+    return months >= 0 ? months : null;
+};
+
+const getAgeGroupLabel = ({ ageYears, ageMonths }) => {
+    const matchedGroup = AGE_GROUPS.find((group) => group.matches({ ageYears, ageMonths }));
     return matchedGroup ? matchedGroup.label : "Unknown age";
 };
 
@@ -265,7 +327,7 @@ const buildAddressLine = (accountUser) => {
     if (!accountUser) return "N/A";
     if (accountUser.fullAddress) return accountUser.fullAddress;
 
-    const address = typeof accountUser.address === "object" ? accountUser.address : {};
+    const address = accountUser.address && typeof accountUser.address === "object" ? accountUser.address : {};
     const house = address.houseNumber || accountUser.houseNumber || "";
     const street = address.street || address.streetName || accountUser.streetName || "";
     const purok = address.purokSubdivision || accountUser.purokSubdivision || "";
@@ -343,6 +405,13 @@ const getSettingsStorageKey = (user) => {
     return `${SETTINGS_STORAGE_PREFIX}-${user?.role || "guest"}-${keyPart}`;
 };
 
+const getMedicationReminderStorageKey = (user, medication) => {
+    const patientKey = user?.patientCode || user?.patientId || user?.username || user?.id || "anonymous";
+    const medicineKey = medication?.medicineId || medication?.medicineName || "medicine";
+    const intakeKey = Number(medication?.medicineIntakePerDay || 0) || 0;
+    return `${MEDICATION_REMINDER_STORAGE_PREFIX}-${patientKey}-${medicineKey}-${intakeKey}`;
+};
+
 const createDefaultSettingsDraft = (user) => ({
     avatarDataUrl: user?.avatarDataUrl || "",
     avatarFile: null,
@@ -369,6 +438,74 @@ const createDefaultSettingsDraft = (user) => ({
     licenseId: user?.systemLicenseNumber || user?.workerId || "",
     theme: user?.theme || "light",
 });
+
+const sanitizeAvatarValue = (avatarValue) => {
+    const value = String(avatarValue || "").trim();
+    if (!value) {
+        return "";
+    }
+
+    // Never persist base64 image blobs in localStorage, they can exceed browser quota.
+    if (value.startsWith("data:")) {
+        return "";
+    }
+
+    return value;
+};
+
+const buildPersistedSettingsDraft = (draft) => ({
+    surname: draft?.surname || "",
+    firstname: draft?.firstname || "",
+    middlename: draft?.middlename || "",
+    houseNumber: draft?.houseNumber || "",
+    streetName: draft?.streetName || "",
+    purokSubdivision: draft?.purokSubdivision || "",
+    email: draft?.email || "",
+    dob: draft?.dob || "",
+    password: draft?.password || "",
+    pinCode: draft?.pinCode || "",
+    adminId: draft?.adminId || "",
+    licenseId: draft?.licenseId || "",
+    theme: draft?.theme || "light",
+    avatarDataUrl: sanitizeAvatarValue(draft?.avatarDataUrl),
+});
+
+const mergeSettingsDraftWithStoredValues = (initialDraft, storedDraftRaw) => {
+    const storedDraft = storedDraftRaw && typeof storedDraftRaw === "object" ? storedDraftRaw : {};
+    const merged = { ...initialDraft };
+
+    Object.entries(storedDraft).forEach(([key, value]) => {
+        if (key === "theme") {
+            if (value === "dark" || value === "light") {
+                merged.theme = value;
+            }
+            return;
+        }
+
+        if (key === "avatarDataUrl") {
+            const sanitizedAvatar = sanitizeAvatarValue(value);
+            if (sanitizedAvatar) {
+                merged.avatarDataUrl = sanitizedAvatar;
+            }
+            return;
+        }
+
+        if (typeof value === "string") {
+            if (value.trim()) {
+                merged[key] = value;
+            }
+            return;
+        }
+
+        if (value !== null && value !== undefined) {
+            merged[key] = value;
+        }
+    });
+
+    merged.avatarDataUrl = sanitizeAvatarValue(merged.avatarDataUrl || initialDraft.avatarDataUrl);
+    merged.avatarFile = null;
+    return merged;
+};
 
 const HOLIDAY_LOOKUP = {
     "01-01": "New Year's Day",
@@ -474,7 +611,6 @@ function UserDashboard() {
     const [createdHealthWorkers, setCreatedHealthWorkers] = useState([]);
     const [patientDirectory, setPatientDirectory] = useState([]);
     const [manageForm, setManageForm] = useState({
-        username: "",
         email: "",
         password: "",
         confirmPassword: "",
@@ -482,6 +618,9 @@ function UserDashboard() {
         firstname: "",
         middlename: "",
         dob: "",
+        sex: SEX_OPTIONS[2],
+        gender: GENDER_OPTIONS[10],
+        genderOther: "",
         securityQuestion: SECURITY_QUESTIONS[0],
         securityAnswer: "",
     });
@@ -501,6 +640,7 @@ function UserDashboard() {
     const [scheduleError, setScheduleError] = useState("");
     const [showDailyConsultationHistory, setShowDailyConsultationHistory] = useState(false);
     const [historySelectedRecordId, setHistorySelectedRecordId] = useState("");
+    const [patientHistorySelectedRecordId, setPatientHistorySelectedRecordId] = useState("");
     const [inboxMessages, setInboxMessages] = useState([]);
     const [adminInboxMessages, setAdminInboxMessages] = useState([]);
     const [activeInboxMessage, setActiveInboxMessage] = useState(null);
@@ -533,7 +673,8 @@ function UserDashboard() {
     const [inventoryAmounts, setInventoryAmounts] = useState({});
     const [settingsDraft, setSettingsDraft] = useState(() => {
         const initialDraft = createDefaultSettingsDraft(user);
-        return { ...initialDraft, ...loadStoredJson(getSettingsStorageKey(user), {}) };
+        const storedDraft = loadStoredJson(getSettingsStorageKey(user), {});
+        return mergeSettingsDraftWithStoredValues(initialDraft, storedDraft);
     });
     const [settingsMessage, setSettingsMessage] = useState("");
     const [settingsError, setSettingsError] = useState("");
@@ -548,6 +689,7 @@ function UserDashboard() {
     const [deletePassword, setDeletePassword] = useState("");
     const [deleteError, setDeleteError] = useState("");
     const [currentDateTime, setCurrentDateTime] = useState(() => new Date());
+    const [medicationReminderStartedAt, setMedicationReminderStartedAt] = useState("");
     const visibleInboxMessages = useMemo(() => getVisibleInboxMessages(inboxMessages, user), [inboxMessages, user]);
     const scheduleByDate = useMemo(() => buildAppointmentScheduleMap(appointments), [appointments]);
     const visibleAdminInboxMessages = useMemo(() => {
@@ -596,6 +738,57 @@ function UserDashboard() {
         );
     }, [historySelectedRecordId, staffConsultationHistory]);
     const recentStaffConsultationHistory = useMemo(() => staffConsultationHistory.slice(0, 5), [staffConsultationHistory]);
+    const patientMedicationReminderContext = useMemo(() => {
+        if (user?.role !== "patient") {
+            return { latestMedication: null, intakePerDay: 0 };
+        }
+
+        const currentPatientCode = user?.patientCode || buildPatientCode(user?.username || "");
+        const patientMedicineConsultations = consultations
+            .filter((entry) => entry.patientCode === currentPatientCode && (entry.medicineId || entry.medicineName))
+            .sort((a, b) => {
+                const aTime = new Date(a.completedAt || a.createdAt || 0).getTime();
+                const bTime = new Date(b.completedAt || b.createdAt || 0).getTime();
+                return bTime - aTime;
+            });
+
+        const latestMedication = patientMedicineConsultations[0] || null;
+        const intakePerDay = latestMedication ? Number(latestMedication.medicineIntakePerDay || 0) : 0;
+
+        return {
+            latestMedication,
+            intakePerDay,
+        };
+    }, [consultations, user]);
+    const medicationReminderStorageKey = useMemo(() => {
+        if (user?.role !== "patient" || !patientMedicationReminderContext.latestMedication) {
+            return "";
+        }
+        return getMedicationReminderStorageKey(user, patientMedicationReminderContext.latestMedication);
+    }, [patientMedicationReminderContext.latestMedication, user]);
+
+    useEffect(() => {
+        if (!medicationReminderStorageKey) {
+            setMedicationReminderStartedAt("");
+            return;
+        }
+
+        const storedStartedAt = window.localStorage.getItem(medicationReminderStorageKey) || "";
+        setMedicationReminderStartedAt(storedStartedAt);
+    }, [medicationReminderStorageKey]);
+
+    useEffect(() => {
+        if (!medicationReminderStorageKey) {
+            return;
+        }
+
+        if (!medicationReminderStartedAt) {
+            window.localStorage.removeItem(medicationReminderStorageKey);
+            return;
+        }
+
+        window.localStorage.setItem(medicationReminderStorageKey, medicationReminderStartedAt);
+    }, [medicationReminderStartedAt, medicationReminderStorageKey]);
 
     useEffect(() => {
         const isStaffRole = user?.role === "health_worker" || user?.role === "admin";
@@ -611,6 +804,29 @@ function UserDashboard() {
             return staffConsultationHistory[0]?.id ? String(staffConsultationHistory[0].id) : "";
         });
     }, [staffConsultationHistory, user?.role]);
+
+    useEffect(() => {
+        if (user?.role !== "patient") {
+            setPatientHistorySelectedRecordId("");
+            return;
+        }
+
+        const patientConsultationHistory = consultations
+            .filter((entry) => entry.patientCode === patientCode)
+            .slice()
+            .sort((a, b) => {
+                const aTime = new Date(a.completedAt || a.createdAt || 0).getTime();
+                const bTime = new Date(b.completedAt || b.createdAt || 0).getTime();
+                return bTime - aTime;
+            });
+
+        setPatientHistorySelectedRecordId((previousId) => {
+            if (previousId && patientConsultationHistory.some((entry) => String(entry.id) === String(previousId))) {
+                return previousId;
+            }
+            return patientConsultationHistory[0]?.id ? String(patientConsultationHistory[0].id) : "";
+        });
+    }, [consultations, patientCode, user?.role]);
 
     const shouldLoadStaffStats = user?.role === "admin" || user?.role === "health_worker";
     const statsQuery = useQuery({
@@ -638,12 +854,12 @@ function UserDashboard() {
     const profileQuery = useQuery({
         queryKey: ["my-profile-bundle", user?.id],
         queryFn: getMyProfileBundle,
-        enabled: Boolean(path === "/profile" && user),
+        enabled: Boolean((path === "/dashboard" || path === "/settings") && user),
         staleTime: 30_000,
     });
 
     useEffect(() => {
-        if (path !== "/profile" || !user) {
+        if (path !== "/dashboard" || !user) {
             setProfile(null);
             setProfileLoading(false);
             setProfileError("");
@@ -666,7 +882,7 @@ function UserDashboard() {
                 email: bundle.email || "",
                 contactNumber: bundle.contactNumber || "",
                 role: bundle.role || "",
-                profileImageUrl: bundle.avatarUrl || "",
+                profileImageUrl: bundle.avatarDataUrl || bundle.avatarUrl || "",
                 patientCode: bundle.patientCode || "",
                 workerId: bundle.workerId || "",
                 adminId: bundle.adminId || "",
@@ -674,19 +890,143 @@ function UserDashboard() {
         }
     }, [path, profileQuery.data, profileQuery.error, profileQuery.isFetching, profileQuery.isLoading, user]);
 
-    const pieData = useMemo(() => {
+    useEffect(() => {
+        if (path !== "/settings" || !user || !profileQuery.data) {
+            return;
+        }
+
+        const bundle = profileQuery.data;
+        const baseUser = {
+            ...user,
+            ...bundle,
+            avatarDataUrl: bundle.avatarDataUrl || user?.avatarDataUrl || "",
+            address:
+                bundle.address && typeof bundle.address === "object"
+                    ? bundle.address
+                    : user?.address || {},
+        };
+
+        const initialDraft = createDefaultSettingsDraft(baseUser);
+        const storedDraft = loadStoredJson(getSettingsStorageKey(baseUser), {});
+        setSettingsDraft(mergeSettingsDraftWithStoredValues(initialDraft, storedDraft));
+    }, [path, profileQuery.data, user]);
+
+    const adminAgeRangeBarData = useMemo(() => {
+        const labels = AGE_GROUPS.map((group) => group.label);
+        const countsByLabel = Object.fromEntries(labels.map((label) => [label, 0]));
+
+        (patientDirectory || []).forEach((patient) => {
+            const ageYears = calculateAgeNumber(patient?.dob);
+            const ageMonths = calculateAgeInMonths(patient?.dob);
+            const rangeLabel = getAgeGroupLabel({ ageYears, ageMonths });
+            if (countsByLabel[rangeLabel] !== undefined) {
+                countsByLabel[rangeLabel] += 1;
+            }
+        });
+
         return {
-            labels: ["Patients", "Health workers"],
+            labels,
             datasets: [
                 {
-                    data: [stats.patientCount, stats.healthWorkerCount],
-                    backgroundColor: ["#ef4444", "#0ea5e9"],
-                    borderColor: ["#ffffff", "#ffffff"],
-                    borderWidth: 1,
+                    label: "Patients",
+                    data: labels.map((label) => countsByLabel[label] || 0),
+                    backgroundColor: ["#ef4444", "#f97316", "#f59e0b", "#22c55e", "#06b6d4", "#0ea5e9", "#3b82f6", "#1d4ed8"],
+                    borderRadius: 8,
+                    maxBarThickness: 48,
                 },
             ],
         };
-    }, [stats.patientCount, stats.healthWorkerCount]);
+    }, [patientDirectory]);
+
+    const renderDashboardIdentityCard = () => {
+        const roleLabelMap = {
+            admin: "Administrator",
+            health_worker: "Health Worker",
+            patient: "Patient",
+        };
+        const roleTintMap = {
+            admin: "from-red-50 to-white border-red-100 text-red-700",
+            health_worker: "from-sky-50 to-white border-sky-100 text-sky-700",
+            patient: "from-amber-50 to-white border-amber-100 text-amber-700",
+        };
+        const roleLabel = roleLabelMap[user?.role] || "Portal User";
+        const roleTint = roleTintMap[user?.role] || "from-slate-50 to-white border-slate-100 text-slate-700";
+
+        return (
+            <section className={`bg-linear-to-r ${roleTint} rounded-3xl border shadow-sm p-5 md:p-6`}>
+                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
+                    <div className="flex items-center gap-4 md:gap-5">
+                        <div className="h-20 w-20 md:h-24 md:w-24 rounded-full bg-white border border-slate-200 shadow-sm flex items-center justify-center overflow-hidden shrink-0">
+                            {profile?.profileImageUrl ? (
+                                <img src={profile.profileImageUrl} alt="Profile" className="h-full w-full object-cover" />
+                            ) : (
+                                <span className="text-2xl md:text-3xl font-bold text-brand-red">
+                                    {profile?.username?.[0]?.toUpperCase() || user?.username?.[0]?.toUpperCase() || "U"}
+                                </span>
+                            )}
+                        </div>
+                        <div className="space-y-1">
+                            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Profile Snapshot</p>
+                            <h2 className="text-xl md:text-2xl font-bold text-slate-900 leading-tight">
+                                {profile
+                                    ? `${profile.surname || "N/A"}, ${profile.firstname || "N/A"}${profile.middlename ? `, ${profile.middlename}` : ""}`
+                                    : "Loading profile..."}
+                            </h2>
+                            <div className="flex flex-wrap items-center gap-2 pt-1">
+                                <span className="rounded-full border border-white/80 bg-white/90 px-3 py-1 text-xs font-semibold text-slate-700">
+                                    {roleLabel}
+                                </span>
+                                {profile?.patientCode && (
+                                    <span className="rounded-full border border-white/80 bg-white/90 px-3 py-1 text-xs font-semibold text-slate-700">
+                                        ID: {profile.patientCode}
+                                    </span>
+                                )}
+                                {profile?.workerId && (
+                                    <span className="rounded-full border border-white/80 bg-white/90 px-3 py-1 text-xs font-semibold text-slate-700">
+                                        Worker: {profile.workerId}
+                                    </span>
+                                )}
+                                {profile?.adminId && (
+                                    <span className="rounded-full border border-white/80 bg-white/90 px-3 py-1 text-xs font-semibold text-slate-700">
+                                        Admin: {profile.adminId}
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                    <div className="flex items-center">
+                        <Link
+                            to="/settings"
+                            className="inline-flex items-center justify-center text-sm font-semibold text-white bg-slate-900 px-4 py-2.5 rounded-xl hover:bg-slate-800 transition-all active:scale-95 shadow-sm"
+                        >
+                            Edit profile
+                        </Link>
+                    </div>
+                </div>
+
+                {profileLoading ? (
+                    <div className="mt-4 h-16 bg-white/70 rounded-2xl animate-pulse"></div>
+                ) : profileError ? (
+                    <p className="mt-4 text-sm text-red-600 bg-red-50 p-3 rounded-lg border border-red-200">{profileError}</p>
+                ) : profile ? (
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                        <div className="rounded-2xl border border-white/80 bg-white/90 p-3">
+                            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Date of Birth</p>
+                            <p className="text-sm font-bold text-slate-800 mt-1">{profile.dob || "N/A"}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/80 bg-white/90 p-3">
+                            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Age</p>
+                            <p className="text-sm font-bold text-slate-800 mt-1">{profile.age || "N/A"}</p>
+                        </div>
+                        <div className="rounded-2xl border border-white/80 bg-white/90 p-3 sm:col-span-2">
+                            <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Address</p>
+                            <p className="text-sm font-bold text-slate-800 mt-1 break-words">{profile.address || "N/A"}</p>
+                        </div>
+                    </div>
+                ) : null}
+            </section>
+        );
+    };
 
     const healthWorkerInsights = useMemo(() => {
         const emptyTopDiagnosis = {
@@ -746,8 +1086,9 @@ function UserDashboard() {
 
         consultations.forEach((entry) => {
             const patient = patientMap[entry.patientCode];
-            const age = calculateAgeNumber(patient?.dob);
-            const rangeLabel = getAgeGroupLabel(age);
+            const ageYears = calculateAgeNumber(patient?.dob);
+            const ageMonths = calculateAgeInMonths(patient?.dob);
+            const rangeLabel = getAgeGroupLabel({ ageYears, ageMonths });
             const diagnosisLabel = normalizeDiagnosis(entry.diagnosis);
 
             diagnosisCountsByRange[rangeLabel][diagnosisLabel] = (diagnosisCountsByRange[rangeLabel][diagnosisLabel] || 0) + 1;
@@ -1047,19 +1388,27 @@ function UserDashboard() {
             setManageError("Birthdate is required.");
             return;
         }
+        if (manageForm.gender === "Other / Unknown (please specify)" && !manageForm.genderOther.trim()) {
+            setManageError("Please specify gender when selecting Other / Unknown.");
+            return;
+        }
 
         try {
             await new Promise((resolve) => setTimeout(resolve, 250));
+            const resolvedGender = manageForm.gender === "Other / Unknown (please specify)"
+                ? manageForm.genderOther.trim()
+                : manageForm.gender;
 
             const securityQuestionId = SECURITY_QUESTIONS.findIndex((question) => question === manageForm.securityQuestion) + 1;
             const createdWorker = await createHealthWorkerAccountByAdmin({
-                username: manageForm.username.trim(),
                 email: manageForm.email.trim(),
                 password: manageForm.password,
                 surname: manageForm.surname.trim(),
                 firstname: manageForm.firstname.trim(),
                 middlename: manageForm.middlename.trim(),
                 dob: manageForm.dob,
+                sex: manageForm.sex,
+                gender: resolvedGender,
                 securityQuestionId: securityQuestionId > 0 ? securityQuestionId : 1,
                 securityAnswer: manageForm.securityAnswer.trim(),
             });
@@ -1068,14 +1417,15 @@ function UserDashboard() {
 
             const workerAccount = {
                 role: "health_worker",
-                username: manageForm.username.trim(),
                 email: manageForm.email.trim(),
                 password: manageForm.password,
                 surname: manageForm.surname.trim(),
                 firstname: manageForm.firstname.trim(),
                 middlename: manageForm.middlename.trim(),
                 dob: manageForm.dob,
-                displayName: `${manageForm.firstname} ${manageForm.surname}`.trim() || manageForm.username.trim(),
+                sex: manageForm.sex,
+                gender: resolvedGender,
+                displayName: `${manageForm.firstname} ${manageForm.surname}`.trim() || manageForm.email.trim(),
                 workerId: licenseNumber,
                 systemLicenseNumber: licenseNumber,
                 securityQuestion: manageForm.securityQuestion,
@@ -1088,7 +1438,6 @@ function UserDashboard() {
                 workerAccount,
                 ...prev.filter(
                     (account) =>
-                        String(account.username || "").toLowerCase() !== String(workerAccount.username || "").toLowerCase() &&
                         String(account.email || "").toLowerCase() !== String(workerAccount.email || "").toLowerCase()
                 ),
             ]);
@@ -1096,7 +1445,6 @@ function UserDashboard() {
             setManageMessage(`Health worker account created. License Number: ${licenseNumber}`);
 
             setManageForm({
-                username: "",
                 email: "",
                 password: "",
                 confirmPassword: "",
@@ -1104,6 +1452,9 @@ function UserDashboard() {
                 firstname: "",
                 middlename: "",
                 dob: "",
+                sex: SEX_OPTIONS[2],
+                gender: GENDER_OPTIONS[10],
+                genderOther: "",
                 securityQuestion: SECURITY_QUESTIONS[0],
                 securityAnswer: "",
             });
@@ -1158,13 +1509,36 @@ function UserDashboard() {
                             <h2 className="text-lg font-bold text-slate-800 mb-4">Accounts Overview</h2>
                             {statsLoading ? (
                                 <div className="animate-pulse flex space-x-4">
-                                    <div className="rounded-full bg-slate-200 h-48 w-48 mx-auto"></div>
+                                    <div className="rounded-xl bg-slate-200 h-48 w-full"></div>
                                 </div>
                             ) : statsError ? (
                                 <p className="text-sm text-red-600 bg-red-50 p-3 rounded-lg">{statsError}</p>
                             ) : (
-                                <div className="h-64 flex justify-center">
-                                    <Pie data={pieData} options={{ maintainAspectRatio: false }} />
+                                <div className="h-72">
+                                    <Bar
+                                        data={adminAgeRangeBarData}
+                                        options={{
+                                            responsive: true,
+                                            maintainAspectRatio: false,
+                                            scales: {
+                                                y: {
+                                                    beginAtZero: true,
+                                                    ticks: { precision: 0 },
+                                                    title: { display: true, text: "Number of Patients" },
+                                                },
+                                                x: {
+                                                    ticks: {
+                                                        autoSkip: false,
+                                                        maxRotation: 25,
+                                                        minRotation: 25,
+                                                    },
+                                                },
+                                            },
+                                            plugins: {
+                                                legend: { display: false },
+                                            },
+                                        }}
+                                    />
                                 </div>
                             )}
                         </div>
@@ -1248,6 +1622,7 @@ function UserDashboard() {
                             You are logged in as <span className="font-semibold text-blue-600 px-2 py-0.5 bg-blue-50 rounded-md text-xs uppercase tracking-wide">Health Worker</span>
                         </p>
                     </div>
+                    {renderDashboardIdentityCard()}
                     <button
                         type="button"
                         onClick={() => setIsPatientDirectoryOpen(true)}
@@ -1451,34 +1826,43 @@ function UserDashboard() {
             .sort((a, b) => a.slotStartAt - b.slotStartAt)[0];
 
         const recentInbox = visibleInboxMessages.slice(0, 3);
-        const patientMedicineConsultations = consultations
-            .filter((entry) => entry.patientCode === patientCode && (entry.medicineId || entry.medicineName))
-            .sort((a, b) => {
-                const aTime = new Date(a.completedAt || a.createdAt || 0).getTime();
-                const bTime = new Date(b.completedAt || b.createdAt || 0).getTime();
-                return bTime - aTime;
-            });
+        const latestMedication = patientMedicationReminderContext.latestMedication;
+        const intakePerDay = patientMedicationReminderContext.intakePerDay;
+        const hasMedicationReminder = Boolean(latestMedication && intakePerDay > 0);
+        const intakeCycleMinutes = intakePerDay > 0 ? Math.max(1, Math.round((24 * 60) / intakePerDay)) : 0;
+        const intakeCycleMs = intakeCycleMinutes * 60 * 1000;
+        const startTimestampMs = Date.parse(medicationReminderStartedAt || "");
+        const hasStartedIntake = Number.isFinite(startTimestampMs) && startTimestampMs > 0;
 
-        const latestMedication = patientMedicineConsultations[0] || null;
-        const hasMedicationReminder = Boolean(latestMedication);
-        const intakePerDay = latestMedication ? Number(latestMedication.medicineIntakePerDay || 0) : 0;
-        const intakeCycleMinutes = intakePerDay > 0 ? Math.floor((24 * 60) / intakePerDay) : 0;
-        const elapsedMinutes = currentDateTime.getHours() * 60 + currentDateTime.getMinutes();
-        const remainingCycleMinutes = intakeCycleMinutes > 0
-            ? intakeCycleMinutes - (elapsedMinutes % intakeCycleMinutes || intakeCycleMinutes)
-            : 0;
+        let nextIntakeAt = null;
+        let remainingCycleMinutes = 0;
+        let intakeProgressPercent = 0;
+
+        if (hasMedicationReminder && hasStartedIntake && intakeCycleMs > 0) {
+            const nowMs = currentDateTime.getTime();
+            const effectiveElapsedMs = Math.max(0, nowMs - startTimestampMs);
+            const cycleCount = Math.floor(effectiveElapsedMs / intakeCycleMs);
+            const nextIntakeMs = startTimestampMs + (cycleCount + 1) * intakeCycleMs;
+            const remainingMs = Math.max(0, nextIntakeMs - nowMs);
+            const elapsedInCurrentCycleMs = effectiveElapsedMs % intakeCycleMs;
+
+            nextIntakeAt = new Date(nextIntakeMs);
+            remainingCycleMinutes = Math.max(0, Math.ceil(remainingMs / (60 * 1000)));
+            intakeProgressPercent = Math.min(100, Math.round((elapsedInCurrentCycleMs / intakeCycleMs) * 100));
+        }
+
         const reminderHours = Math.floor(remainingCycleMinutes / 60);
         const reminderMinutes = remainingCycleMinutes % 60;
-        const minutesSinceLastIntake = intakeCycleMinutes > 0 ? elapsedMinutes % intakeCycleMinutes : 0;
-        const passedHours = Math.floor(minutesSinceLastIntake / 60);
-        const passedMinutes = minutesSinceLastIntake % 60;
-        const intakeProgressPercent = intakeCycleMinutes > 0
-            ? Math.min(100, Math.round((minutesSinceLastIntake / intakeCycleMinutes) * 100))
-            : 0;
         const intakeFrequencyLabel = intakePerDay > 0
             ? `${intakePerDay}x/day`
             : "";
         const medicineLabel = latestMedication?.medicineName || "your prescribed medicine";
+        const nextIntakeClockLabel = nextIntakeAt
+            ? nextIntakeAt.toLocaleTimeString("en-PH", { hour: "numeric", minute: "2-digit" })
+            : "";
+        const handleStartTakingNow = () => {
+            setMedicationReminderStartedAt(new Date().toISOString());
+        };
 
         return (
             <div className="space-y-6">
@@ -1488,6 +1872,7 @@ function UserDashboard() {
                 <p className="text-slate-600">
                     Welcome to your <span className="font-semibold text-brand-red px-2 py-0.5 bg-red-50 rounded-md text-xs uppercase tracking-wide">Patient Portal</span>
                 </p>
+                {renderDashboardIdentityCard()}
 
                 <section className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-12">
                     <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm xl:col-span-3">
@@ -1535,14 +1920,21 @@ function UserDashboard() {
                         {hasMedicationReminder ? (
                             <>
                                 <p className="text-sm text-red-100 mt-2 leading-relaxed">
-                                    {intakePerDay > 3
-                                        ? `Take ${medicineLabel} ${intakeFrequencyLabel}.`
-                                        : `Take ${medicineLabel} ${intakeFrequencyLabel}. Next intake in ${reminderHours} hour${reminderHours === 1 ? "" : "s"} and ${reminderMinutes} minutes.`}
+                                    {`Take ${medicineLabel} ${intakeFrequencyLabel}.`}
                                 </p>
-                                {intakePerDay > 3 ? (
-                                    <p className="text-xs text-red-100 mt-3">
-                                        {latestMedication.medicineIntakeInstruction || "Follow the custom intake instruction from your health worker."}
-                                    </p>
+                                {!hasStartedIntake ? (
+                                    <div className="mt-4 space-y-3">
+                                        <p className="text-xs text-red-100">
+                                            Tap Start Taking Now to begin your intake countdown.
+                                        </p>
+                                        <button
+                                            type="button"
+                                            onClick={handleStartTakingNow}
+                                            className="w-full rounded-lg bg-white text-red-700 font-semibold text-sm px-3 py-2 hover:bg-red-50 transition-all"
+                                        >
+                                            Start Taking Now
+                                        </button>
+                                    </div>
                                 ) : (
                                     <div className="mt-4">
                                         <div className="flex items-center justify-between text-xs text-red-100 mb-1">
@@ -1553,10 +1945,18 @@ function UserDashboard() {
                                             <div className="h-full bg-white" style={{ width: `${intakeProgressPercent}%` }} />
                                         </div>
                                         <p className="text-xs text-red-100 mt-2">
-                                            Time passed since last intake: {passedHours} hour{passedHours === 1 ? "" : "s"} {passedMinutes} minutes
+                                            Next intake: {reminderHours} hour{reminderHours === 1 ? "" : "s"} {reminderMinutes} minute{reminderMinutes === 1 ? "" : "s"}
+                                        </p>
+                                        <p className="text-xs text-red-100 mt-1">
+                                            Next schedule time: {nextIntakeClockLabel || "N/A"}
                                         </p>
                                     </div>
                                 )}
+                                {latestMedication.medicineIntakeInstruction ? (
+                                    <p className="text-xs text-red-100 mt-3">
+                                        {latestMedication.medicineIntakeInstruction}
+                                    </p>
+                                ) : null}
                             </>
                         ) : (
                             <div className="mt-4 h-24" />
@@ -1615,9 +2015,9 @@ function UserDashboard() {
                                 <p className="text-xs uppercase tracking-wide text-slate-500">Medication Cycle</p>
                                 <p className="text-sm font-semibold text-slate-800 mt-1">
                                     {hasMedicationReminder
-                                        ? intakePerDay > 3
-                                            ? "Custom intake schedule"
-                                            : `Next intake in ${reminderHours}h ${reminderMinutes}m`
+                                        ? hasStartedIntake
+                                            ? `Next intake: ${reminderHours}h ${reminderMinutes}m (${nextIntakeClockLabel})`
+                                            : "Start intake countdown"
                                         : ""}
                                 </p>
                             </div>
@@ -1628,65 +2028,11 @@ function UserDashboard() {
         );
     };
 
-    const renderProfile = () => {
-        return (
-            <div className="w-full max-w-5xl space-y-6">
-                <div>
-                    <h1 className="text-3xl font-bold text-slate-900 mb-2">Profile Details</h1>
-                    <p className="text-slate-600">
-                        View your account information below.
-                    </p>
-                </div>
-
-                {profileLoading ? (
-                    <div className="h-24 bg-slate-200 rounded-2xl animate-pulse"></div>
-                ) : profileError ? (
-                    <p className="text-sm text-red-600 bg-red-50 p-3 rounded-lg">{profileError}</p>
-                ) : profile ? (
-                    <div className="w-full bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex flex-col md:flex-row items-center md:items-start gap-6">
-                        <div className="h-24 w-24 rounded-full bg-red-50 border-4 border-white shadow-md flex items-center justify-center overflow-hidden shrink-0">
-                            {profile.profileImageUrl ? (
-                                <img
-                                    src={profile.profileImageUrl}
-                                    alt="Profile"
-                                    className="h-full w-full object-cover"
-                                />
-                            ) : (
-                                <span className="text-3xl font-bold text-brand-red">
-                                    {profile.username?.[0]?.toUpperCase() || "U"}
-                                </span>
-                            )}
-                        </div>
-                        <div className="w-full text-center md:text-left">
-                            <p className="text-sm font-semibold text-slate-500 uppercase tracking-wide">Fullname (SN, FN, MN)</p>
-                            <p className="text-xl font-bold text-slate-900 mt-1">
-                                {profile.surname || "N/A"}, {profile.firstname || "N/A"}, {profile.middlename || "N/A"}
-                            </p>
-                            <div className="mt-3 space-y-1 text-sm text-slate-600">
-                                <p><span className="font-semibold text-slate-700">Date of Birth:</span> {profile.dob || "N/A"}</p>
-                                <p><span className="font-semibold text-slate-700">Age:</span> {profile.age}</p>
-                                <p><span className="font-semibold text-slate-700">Address:</span> {profile.address || "N/A"}</p>
-                            </div>
-                        </div>
-                    </div>
-                ) : null}
-
-                <div>
-                    <Link
-                        to="/settings"
-                        className="inline-flex items-center justify-center text-sm font-semibold text-white bg-brand-red px-5 py-2.5 rounded-lg hover:bg-brand-dark transition-all active:scale-95 shadow-sm"
-                    >
-                        Edit profile
-                    </Link>
-                </div>
-            </div>
-        );
-    };
-
     const renderSettings = () => {
         const isPatient = user?.role === "patient";
         const isHealthWorker = user?.role === "health_worker";
         const isAdmin = user?.role === "admin";
+        const isCooldownManagedRole = isPatient || isHealthWorker;
         const storageKey = getSettingsStorageKey(user);
         const inputClass = `w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 transition-all ${
             settingsDraft.theme === "dark"
@@ -1698,7 +2044,49 @@ function UserDashboard() {
             : "bg-white text-slate-900 border-slate-200";
         const mutedClass = settingsDraft.theme === "dark" ? "text-slate-300" : "text-slate-600";
 
+        const daysUntilAllowed = (lastIso, cooldownDays) => {
+            if (!lastIso) return 0;
+            const lastDate = new Date(lastIso);
+            if (Number.isNaN(lastDate.getTime())) return 0;
+            const elapsed = Date.now() - lastDate.getTime();
+            const cooldownMs = cooldownDays * 24 * 60 * 60 * 1000;
+            if (elapsed >= cooldownMs) return 0;
+            return Math.ceil((cooldownMs - elapsed) / (24 * 60 * 60 * 1000));
+        };
+
+        const normalizePart = (value) => String(value || "").trim().toLowerCase();
+
+        const profileBundle = profileQuery.data || {};
+        const currentAvatarUrl = sanitizeAvatarValue(profileBundle.avatarDataUrl || user?.avatarDataUrl || "");
+        const avatarCooldownDaysLeft = isCooldownManagedRole
+            ? daysUntilAllowed(profileBundle.lastAvatarUpdatedAt || user?.lastAvatarUpdatedAt, 7)
+            : 0;
+        const addressCooldownDaysLeft = isCooldownManagedRole
+            ? daysUntilAllowed(profileBundle.lastAddressUpdatedAt || user?.lastAddressUpdatedAt, 30)
+            : 0;
+
+        const isAvatarOnCooldown = avatarCooldownDaysLeft > 0;
+        const isAddressOnCooldown = addressCooldownDaysLeft > 0;
+
+        const baselineAddress = profileBundle.address && typeof profileBundle.address === "object"
+            ? profileBundle.address
+            : user?.address && typeof user.address === "object"
+                ? user.address
+                : {};
+
+        const isAvatarChangeRequested = Boolean(settingsDraft.avatarFile)
+            || (sanitizeAvatarValue(settingsDraft.avatarDataUrl) && sanitizeAvatarValue(settingsDraft.avatarDataUrl) !== currentAvatarUrl);
+        const isAddressChangeRequested =
+            normalizePart(settingsDraft.houseNumber) !== normalizePart(baselineAddress.houseNumber || user?.houseNumber)
+            || normalizePart(settingsDraft.streetName) !== normalizePart(baselineAddress.street || baselineAddress.streetName || user?.streetName)
+            || normalizePart(settingsDraft.purokSubdivision) !== normalizePart(baselineAddress.purokSubdivision || user?.purokSubdivision);
+
         const handleAvatarChange = (file) => {
+            if (isAvatarOnCooldown) {
+                setSettingsError(`Profile photo is on cooldown. You can change it again in ${avatarCooldownDaysLeft} day(s).`);
+                return;
+            }
+
             if (!file) {
                 setSettingsDraft((previous) => ({ ...previous, avatarDataUrl: "", avatarFile: null }));
                 return;
@@ -1723,6 +2111,34 @@ function UserDashboard() {
             setSettingsError("");
             setSettingsMessage("");
 
+            if (isCooldownManagedRole && isAvatarOnCooldown && isAvatarChangeRequested) {
+                setSettingsError(`Profile photo is on cooldown. You can change it again in ${avatarCooldownDaysLeft} day(s).`);
+                return;
+            }
+
+            if (isCooldownManagedRole && isAddressOnCooldown && isAddressChangeRequested) {
+                setSettingsError(`Address is on cooldown. You can update it again in ${addressCooldownDaysLeft} day(s).`);
+                return;
+            }
+
+            if (isCooldownManagedRole && isAvatarChangeRequested) {
+                const confirmedAvatarChange = window.confirm(
+                    "Are you sure to change profile picture? You can only change your profile photo every 7 days (OK/Cancel)"
+                );
+                if (!confirmedAvatarChange) {
+                    return;
+                }
+            }
+
+            if (isCooldownManagedRole && isAddressChangeRequested) {
+                const confirmedAddressChange = window.confirm(
+                    "Are you sure to change address? You can only change address every 30 days (OK/Cancel)"
+                );
+                if (!confirmedAddressChange) {
+                    return;
+                }
+            }
+
             try {
                 const bundle = await updateMyProfileSettings({
                     surname: settingsDraft.surname,
@@ -1740,26 +2156,75 @@ function UserDashboard() {
                     avatarUrl: settingsDraft.avatarDataUrl,
                 });
 
+                const resolvedAddress = bundle.address && typeof bundle.address === "object"
+                    ? bundle.address
+                    : {
+                        houseNumber: settingsDraft.houseNumber,
+                        street: settingsDraft.streetName,
+                        streetName: settingsDraft.streetName,
+                        purokSubdivision: settingsDraft.purokSubdivision,
+                    };
+
                 updateUser({
                     surname: bundle.surname || settingsDraft.surname,
                     firstname: bundle.firstname || settingsDraft.firstname,
                     middlename: bundle.middlename || settingsDraft.middlename,
                     dob: bundle.dob || settingsDraft.dob,
-                    address: {
-                        houseNumber: settingsDraft.houseNumber,
-                        street: settingsDraft.streetName,
-                        streetName: settingsDraft.streetName,
-                        purokSubdivision: settingsDraft.purokSubdivision,
-                    },
-                    fullAddress: `${settingsDraft.houseNumber}, ${settingsDraft.streetName}, ${settingsDraft.purokSubdivision}, BARANGAY SAN PERFECTO, SAN JUAN CITY, METRO MANILA, NCR`,
+                    address: resolvedAddress,
+                    addressId: bundle.addressId || null,
+                    houseNumber: bundle.houseNumber || settingsDraft.houseNumber,
+                    streetName: bundle.streetName || settingsDraft.streetName,
+                    purokSubdivision: bundle.purokSubdivision || settingsDraft.purokSubdivision,
+                    fullAddress: bundle.fullAddress || buildAddressLine({
+                        address: resolvedAddress,
+                        houseNumber: bundle.houseNumber || settingsDraft.houseNumber,
+                        streetName: bundle.streetName || settingsDraft.streetName,
+                        purokSubdivision: bundle.purokSubdivision || settingsDraft.purokSubdivision,
+                    }),
                     email: bundle.email || settingsDraft.email,
                     pinCode: bundle.pinCode || settingsDraft.pinCode,
                     adminId: bundle.adminId || settingsDraft.adminId,
                     systemLicenseNumber: bundle.systemLicenseNumber || settingsDraft.licenseId,
                     workerId: bundle.workerId || settingsDraft.licenseId,
-                    avatarDataUrl: bundle.avatarUrl || settingsDraft.avatarDataUrl,
+                    avatarDataUrl: bundle.avatarDataUrl || settingsDraft.avatarDataUrl,
                 });
-                window.localStorage.setItem(storageKey, JSON.stringify(settingsDraft));
+
+                setSettingsDraft((previous) => ({
+                    ...previous,
+                    avatarDataUrl: bundle.avatarDataUrl || previous.avatarDataUrl,
+                    avatarFile: null,
+                }));
+
+                const persistedSettings = buildPersistedSettingsDraft({
+                    ...settingsDraft,
+                    avatarDataUrl: bundle.avatarDataUrl || settingsDraft.avatarDataUrl,
+                });
+
+                try {
+                    window.localStorage.setItem(storageKey, JSON.stringify(persistedSettings));
+                } catch (storageError) {
+                    // Clear only this settings key and retry with a minimal payload.
+                    window.localStorage.removeItem(storageKey);
+                    window.localStorage.setItem(
+                        storageKey,
+                        JSON.stringify({
+                            surname: persistedSettings.surname,
+                            firstname: persistedSettings.firstname,
+                            middlename: persistedSettings.middlename,
+                            houseNumber: persistedSettings.houseNumber,
+                            streetName: persistedSettings.streetName,
+                            purokSubdivision: persistedSettings.purokSubdivision,
+                            email: persistedSettings.email,
+                            dob: persistedSettings.dob,
+                            adminId: persistedSettings.adminId,
+                            licenseId: persistedSettings.licenseId,
+                            pinCode: persistedSettings.pinCode,
+                            theme: persistedSettings.theme,
+                            avatarDataUrl: sanitizeAvatarValue(persistedSettings.avatarDataUrl),
+                        })
+                    );
+                    console.warn("Settings storage was near quota. Saved a minimal profile payload.", storageError);
+                }
                 
                 // Invalidate profile-related queries to ensure fresh data with updated address
                 await queryClient.invalidateQueries({ queryKey: ["my-profile-bundle"] });
@@ -1888,8 +2353,14 @@ function UserDashboard() {
                                     type="file"
                                     accept="image/*"
                                     onChange={(e) => handleAvatarChange(e.target.files?.[0] || null)}
+                                    disabled={isAvatarOnCooldown}
                                     className={`${inputClass} w-full max-w-xs`}
                                 />
+                                {isCooldownManagedRole && isAvatarOnCooldown && (
+                                    <p className="text-xs text-amber-600">
+                                        You can change your profile photo again in {avatarCooldownDaysLeft} day(s).
+                                    </p>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -1900,8 +2371,8 @@ function UserDashboard() {
                             <input
                                 type="text"
                                 value={settingsDraft.surname}
-                                onChange={(e) => setSettingsDraft((prev) => ({ ...prev, surname: e.target.value }))}
-                                className={inputClass}
+                                disabled
+                                className={`${inputClass} opacity-70 cursor-not-allowed`}
                             />
                         </div>
                         <div>
@@ -1909,8 +2380,8 @@ function UserDashboard() {
                             <input
                                 type="text"
                                 value={settingsDraft.firstname}
-                                onChange={(e) => setSettingsDraft((prev) => ({ ...prev, firstname: e.target.value }))}
-                                className={inputClass}
+                                disabled
+                                className={`${inputClass} opacity-70 cursor-not-allowed`}
                             />
                         </div>
                         <div>
@@ -1918,8 +2389,8 @@ function UserDashboard() {
                             <input
                                 type="text"
                                 value={settingsDraft.middlename}
-                                onChange={(e) => setSettingsDraft((prev) => ({ ...prev, middlename: e.target.value }))}
-                                className={inputClass}
+                                disabled
+                                className={`${inputClass} opacity-70 cursor-not-allowed`}
                             />
                         </div>
                     </div>
@@ -1933,7 +2404,8 @@ function UserDashboard() {
                                     type="text"
                                     value={settingsDraft.houseNumber}
                                     onChange={(e) => setSettingsDraft((prev) => ({ ...prev, houseNumber: e.target.value }))}
-                                    className={inputClass}
+                                    disabled={isCooldownManagedRole && isAddressOnCooldown}
+                                    className={`${inputClass} ${isCooldownManagedRole && isAddressOnCooldown ? "opacity-70 cursor-not-allowed" : ""}`}
                                 />
                             </div>
                             <div>
@@ -1942,7 +2414,8 @@ function UserDashboard() {
                                     type="text"
                                     value={settingsDraft.streetName}
                                     onChange={(e) => setSettingsDraft((prev) => ({ ...prev, streetName: e.target.value }))}
-                                    className={inputClass}
+                                    disabled={isCooldownManagedRole && isAddressOnCooldown}
+                                    className={`${inputClass} ${isCooldownManagedRole && isAddressOnCooldown ? "opacity-70 cursor-not-allowed" : ""}`}
                                 />
                             </div>
                             <div>
@@ -1951,9 +2424,15 @@ function UserDashboard() {
                                     type="text"
                                     value={settingsDraft.purokSubdivision}
                                     onChange={(e) => setSettingsDraft((prev) => ({ ...prev, purokSubdivision: e.target.value }))}
-                                    className={inputClass}
+                                    disabled={isCooldownManagedRole && isAddressOnCooldown}
+                                    className={`${inputClass} ${isCooldownManagedRole && isAddressOnCooldown ? "opacity-70 cursor-not-allowed" : ""}`}
                                 />
                             </div>
+                            {isCooldownManagedRole && isAddressOnCooldown && (
+                                <p className="text-xs text-amber-600">
+                                    You can change address again in {addressCooldownDaysLeft} day(s).
+                                </p>
+                            )}
                         </div>
                         <div className="space-y-4">
                             <div>
@@ -2193,19 +2672,6 @@ function UserDashboard() {
                 >
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                         <div>
-                            <label className={labelClass} htmlFor="hw-username">Username</label>
-                            <input
-                                id="hw-username"
-                                type="text"
-                                className={inputClass}
-                                value={manageForm.username}
-                                onChange={(e) =>
-                                    setManageForm((f) => ({ ...f, username: e.target.value }))
-                                }
-                                required
-                            />
-                        </div>
-                        <div>
                             <label className={labelClass} htmlFor="hw-email">Email Address</label>
                             <input
                                 id="hw-email"
@@ -2318,6 +2784,51 @@ function UserDashboard() {
                         />
                     </div>
 
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                        <div>
+                            <label className={labelClass} htmlFor="hw-sex">Sex</label>
+                            <select
+                                id="hw-sex"
+                                className={inputClass}
+                                value={manageForm.sex}
+                                onChange={(e) => setManageForm((f) => ({ ...f, sex: e.target.value }))}
+                                required
+                            >
+                                {SEX_OPTIONS.map((option) => (
+                                    <option key={option} value={option}>{option}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div>
+                            <label className={labelClass} htmlFor="hw-gender">Gender</label>
+                            <select
+                                id="hw-gender"
+                                className={inputClass}
+                                value={manageForm.gender}
+                                onChange={(e) => setManageForm((f) => ({ ...f, gender: e.target.value }))}
+                                required
+                            >
+                                {GENDER_OPTIONS.map((option) => (
+                                    <option key={option} value={option}>{option}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+
+                    {manageForm.gender === "Other / Unknown (please specify)" && (
+                        <div>
+                            <label className={labelClass} htmlFor="hw-gender-other">Please specify gender</label>
+                            <input
+                                id="hw-gender-other"
+                                type="text"
+                                className={inputClass}
+                                value={manageForm.genderOther}
+                                onChange={(e) => setManageForm((f) => ({ ...f, genderOther: e.target.value }))}
+                                required
+                            />
+                        </div>
+                    )}
+
                     <hr className="border-slate-100" />
 
                     <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-4">
@@ -2379,8 +2890,9 @@ function UserDashboard() {
                                         <p className="text-sm font-semibold text-slate-800">
                                             {account.surname || "N/A"}, {account.firstname || "N/A"}, {account.middlename || "N/A"}
                                         </p>
-                                        <p className="text-xs text-slate-600 mt-1">Username: {account.username || "N/A"}</p>
                                         <p className="text-xs text-slate-600">Email: {account.email || "N/A"}</p>
+                                        <p className="text-xs text-slate-600">Sex: {account.sex || "N/A"}</p>
+                                        <p className="text-xs text-slate-600">Gender: {account.gender || "N/A"}</p>
                                         <p className="text-xs font-bold text-brand-red mt-1">License Number: {account.systemLicenseNumber || account.workerId || "N/A"}</p>
                                         <div className="mt-3">
                                             <button
@@ -2444,6 +2956,16 @@ function UserDashboard() {
 
         const isPatient = user?.role === "patient";
         const isHealthWorker = user?.role === "health_worker";
+        const pendingPatientAppointment = isPatient
+            ? appointments
+                .filter((entry) => entry.patientCode === patientCode && entry.status === "booked")
+                .map((entry) => ({
+                    ...entry,
+                    slotStartAt: buildSlotStartDate(entry.dateKey, entry.timeSlot),
+                }))
+                .filter((entry) => entry.slotStartAt && entry.slotStartAt.getTime() > currentDateTime.getTime())
+                .sort((a, b) => a.slotStartAt - b.slotStartAt)[0] || null
+            : null;
 
         const symptomBarData = selectedSchedule
             ? {
@@ -2505,6 +3027,17 @@ function UserDashboard() {
             }
             if (!selectedTimeSlot) {
                 setScheduleError("Please choose an appointment hour.");
+                return;
+            }
+            if (isPatient && pendingPatientAppointment) {
+                setScheduleError(
+                    `You already have a pending appointment on ${formatLongDate(pendingPatientAppointment.dateKey)} at ${pendingPatientAppointment.timeSlot}. Please wait until that checkup is done before booking another schedule.`
+                );
+                return;
+            }
+            const selectedSlotStart = buildSlotStartDate(selectedDateKey, selectedTimeSlot);
+            if (selectedSlotStart && selectedSlotStart.getTime() <= currentDateTime.getTime()) {
+                setScheduleError("Selected appointment hour has already passed. Please choose another appointment hour.");
                 return;
             }
             if ((selectedSchedule.slotBookings?.[selectedTimeSlot] || 0) >= SLOT_MAX_APPOINTMENTS) {
@@ -2727,7 +3260,6 @@ function UserDashboard() {
                             );
                         })}
                     </div>
-
                     <div className="mt-4 flex flex-wrap items-center gap-4 text-xs text-slate-600">
                         {(isHealthWorker ? workerLegend : patientLegend).map((item) => (
                             <div key={item.label} className="flex items-center gap-2">
@@ -2741,14 +3273,20 @@ function UserDashboard() {
                 {isPatient && (
                     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-4">
                         <h3 className="text-xl font-bold text-slate-800">Book Consultation</h3>
+                        {pendingPatientAppointment && (
+                            <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 p-3 rounded-lg">
+                                You already have a pending checkup on {formatLongDate(pendingPatientAppointment.dateKey)} at {pendingPatientAppointment.timeSlot}. New booking is disabled until that appointment is reached.
+                            </p>
+                        )}
                         {!selectedSchedule ? (
                             <p className="text-slate-600">Select a date in the calendar to continue.</p>
                         ) : selectedStatus !== "available" ? (
                             <p className="text-slate-600">
-                                {selectedStatus === "fully_booked" && "Fully booked. No vacancies available"}
                                 {selectedStatus === "holiday" && `Holiday: ${selectedSchedule.holidayName}`}
                                 {selectedStatus === "outside_window" && "This date is outside the allowed booking window (today up to 2 weeks only)."}
                             </p>
+                        ) : pendingPatientAppointment ? (
+                            <p className="text-slate-600">Booking is currently locked while you have a pending appointment.</p>
                         ) : (
                             <form onSubmit={handleBookSchedule} className="space-y-4">
                                 <p className="text-sm text-slate-600">
@@ -2774,9 +3312,11 @@ function UserDashboard() {
                                         {APPOINTMENT_TIME_SLOTS.map((slot) => {
                                             const slotBooked = selectedSchedule.slotBookings?.[slot] || 0;
                                             const isSlotFull = slotBooked >= SLOT_MAX_APPOINTMENTS;
+                                            const slotStartAt = buildSlotStartDate(selectedDateKey, slot);
+                                            const isSlotPast = slotStartAt ? slotStartAt.getTime() <= currentDateTime.getTime() : false;
                                             return (
-                                            <option key={slot} value={slot} disabled={isSlotFull}>
-                                                {slot} ({slotBooked}/{SLOT_MAX_APPOINTMENTS}) {isSlotFull ? "- Full" : ""}
+                                            <option key={slot} value={slot} disabled={isSlotFull || isSlotPast}>
+                                                {slot} ({slotBooked}/{SLOT_MAX_APPOINTMENTS}) {isSlotPast ? "- Passed" : isSlotFull ? "- Full" : ""}
                                             </option>
                                         );
                                         })}
@@ -3703,48 +4243,88 @@ function UserDashboard() {
             );
         }
 
-        const relevantConsultations = consultations.filter((entry) => entry.patientCode === patientCode);
-
-        const cards = relevantConsultations.flatMap((entry) => {
-            const consultationText = `Successful consultation! ${entry.diagnosis} and ${entry.medicineName} (${entry.medicineQuantity}).`;
-            const medicineText = `Medicine received: ${entry.medicineName} x ${entry.medicineQuantity}.`;
-
-            return [
-                {
-                    id: `${entry.id}-consultation`,
-                    title: consultationText,
-                    subtext: `${formatLongDate(entry.dateKey)} at ${entry.timeSlot}`,
-                    meta: entry.note,
-                },
-                {
-                    id: `${entry.id}-medicine`,
-                    title: medicineText,
-                    subtext: `${formatLongDate(entry.dateKey)} at ${entry.timeSlot}`,
-                    meta: `Diagnosis: ${entry.diagnosis}`,
-                },
-            ];
-        });
+        const patientConsultationHistory = consultations
+            .filter((entry) => entry.patientCode === patientCode)
+            .slice()
+            .sort((a, b) => {
+                const aTime = new Date(a.completedAt || a.createdAt || 0).getTime();
+                const bTime = new Date(b.completedAt || b.createdAt || 0).getTime();
+                return bTime - aTime;
+            });
+        const selectedPatientHistoryRecord = patientConsultationHistory.find(
+            (entry) => String(entry.id) === String(patientHistorySelectedRecordId)
+        ) || patientConsultationHistory[0] || null;
+        const selectedIntakePerDay = Number(selectedPatientHistoryRecord?.medicineIntakePerDay || 0);
+        const selectedIntakeEveryHours = selectedIntakePerDay > 0 ? Math.max(1, Math.round(24 / selectedIntakePerDay)) : 0;
 
         return (
             <div className="space-y-6">
                 <div>
                     <h1 className="text-3xl font-bold text-slate-900 mb-1">History</h1>
-                    <p className="text-slate-600">Consultation records and medicine logs.</p>
+                    <p className="text-slate-600">Consultation records and medicine logs. Click any record to view complete details.</p>
                 </div>
 
-                {cards.length === 0 ? (
+                {patientConsultationHistory.length === 0 ? (
                     <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 text-slate-600">
                         No completed consultations yet.
                     </div>
                 ) : (
-                    <div className="space-y-4">
-                        {cards.map((card) => (
-                            <article key={card.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 p-5 space-y-2">
-                                <h2 className="text-lg font-bold text-slate-800">{card.title}</h2>
-                                <p className="text-sm text-slate-500">{card.subtext}</p>
-                                <p className="text-sm text-slate-700">{card.meta}</p>
-                            </article>
-                        ))}
+                    <div className="grid gap-4 lg:grid-cols-12">
+                        <div className="lg:col-span-5 bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+                            <h2 className="text-base font-bold text-slate-800 mb-3">Consultation logs</h2>
+                            <div className="space-y-2 max-h-130 overflow-y-auto pr-1">
+                                {patientConsultationHistory.map((entry) => {
+                                    const isActive = String(entry.id) === String(selectedPatientHistoryRecord?.id);
+                                    return (
+                                        <button
+                                            key={`patient-history-${entry.id}`}
+                                            type="button"
+                                            onClick={() => setPatientHistorySelectedRecordId(String(entry.id))}
+                                            className={`w-full rounded-xl border p-3 text-left transition-all ${
+                                                isActive
+                                                    ? "border-brand-red bg-red-50"
+                                                    : "border-slate-200 bg-white hover:bg-slate-50"
+                                            }`}
+                                        >
+                                            <p className="text-sm font-bold text-slate-800">Medicine given: {entry.medicineName || "N/A"} x {entry.medicineQuantity || 0}</p>
+                                            <p className="text-xs text-slate-600 mt-1">{formatLongDate(entry.dateKey)} at {entry.timeSlot || "N/A"}</p>
+                                            <p className="text-sm text-slate-700 mt-1 line-clamp-1">Diagnosis: {entry.diagnosis || "N/A"}</p>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+
+                        <div className="lg:col-span-7 bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-4">
+                            <h2 className="text-xl font-bold text-slate-900">Record details</h2>
+                            {!selectedPatientHistoryRecord ? (
+                                <p className="text-sm text-slate-600">Select a record to view full details.</p>
+                            ) : (
+                                <div className="space-y-4 text-sm text-slate-700">
+                                    <section className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+                                        <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Consultation Summary</h3>
+                                        <p><span className="font-semibold text-slate-900">Diagnosis:</span> {selectedPatientHistoryRecord.diagnosis || "N/A"}</p>
+                                        <p><span className="font-semibold text-slate-900">Medicine given:</span> {selectedPatientHistoryRecord.medicineName || "N/A"}</p>
+                                        <p><span className="font-semibold text-slate-900">Quantity dispensed:</span> {selectedPatientHistoryRecord.medicineQuantity || 0}</p>
+                                        <p><span className="font-semibold text-slate-900">Intake frequency:</span> {selectedIntakePerDay > 0 ? `${selectedIntakePerDay}x a day` : "N/A"}</p>
+                                        <p><span className="font-semibold text-slate-900">Suggested interval:</span> {selectedIntakeEveryHours > 0 ? `Every ${selectedIntakeEveryHours} hour(s)` : "N/A"}</p>
+                                        {selectedPatientHistoryRecord.medicineIntakeInstruction ? (
+                                            <p><span className="font-semibold text-slate-900">Custom instruction:</span> {selectedPatientHistoryRecord.medicineIntakeInstruction}</p>
+                                        ) : null}
+                                        <p><span className="font-semibold text-slate-900">Patient note:</span> {selectedPatientHistoryRecord.note || "N/A"}</p>
+                                    </section>
+
+                                    <section className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
+                                        <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Timeline</h3>
+                                        <p><span className="font-semibold text-slate-900">Schedule:</span> {formatLongDate(selectedPatientHistoryRecord.dateKey)} at {selectedPatientHistoryRecord.timeSlot || "N/A"}</p>
+                                        <p><span className="font-semibold text-slate-900">Started:</span> {selectedPatientHistoryRecord.startedAt ? new Date(selectedPatientHistoryRecord.startedAt).toLocaleString("en-PH") : "N/A"}</p>
+                                        <p><span className="font-semibold text-slate-900">Completed:</span> {selectedPatientHistoryRecord.completedAt ? new Date(selectedPatientHistoryRecord.completedAt).toLocaleString("en-PH") : "N/A"}</p>
+                                        <p><span className="font-semibold text-slate-900">Duration:</span> {selectedPatientHistoryRecord.durationLabel || formatDuration(selectedPatientHistoryRecord.durationSeconds || 0)}</p>
+                                        <p><span className="font-semibold text-slate-900">Attending health worker:</span> {selectedPatientHistoryRecord.workerName || "N/A"}</p>
+                                    </section>
+                                </div>
+                            )}
+                        </div>
                     </div>
                 )}
             </div>
@@ -3801,7 +4381,6 @@ function UserDashboard() {
 
     const renderContent = () => {
         if (path === "/dashboard") return renderDashboardHome();
-        if (path === "/profile") return renderProfile();
         if (path === "/manage-accounts") return renderManageAccounts();
 
         if (path === "/patient-accounts") {

@@ -9,6 +9,23 @@ const SECURITY_QUESTIONS = [
     "Your childhood nickname",
 ];
 
+const SEX_OPTIONS = ["Male", "Female", "Prefer not to say"];
+
+const GENDER_OPTIONS = [
+    "Cisgender Woman",
+    "Cisgender Man",
+    "Transgender Woman",
+    "Transgender Man",
+    "Non-binary",
+    "Genderqueer",
+    "Agender",
+    "Intersex",
+    "Two-Spirit",
+    "Questioning",
+    "Prefer not to say",
+    "Other / Unknown (please specify)",
+];
+
 const KEYBOARD_SPECIAL_CHAR_PATTERN = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]/;
 const KEYBOARD_ALLOWED_PATTERN = /^[A-Za-z0-9!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]+$/;
 
@@ -46,7 +63,6 @@ const validatePasswordPolicy = (password) => {
 };
 
 function Register({ setIsRegisteringState }) {
-    const [username, setUsername] = useState("");
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [confirmPassword, setConfirmPassword] = useState("");
@@ -54,6 +70,9 @@ function Register({ setIsRegisteringState }) {
     const [firstname, setFirstname] = useState("");
     const [middlename, setMiddlename] = useState("");
     const [dob, setDob] = useState("");
+    const [sex, setSex] = useState(SEX_OPTIONS[2]);
+    const [gender, setGender] = useState(GENDER_OPTIONS[10]);
+    const [genderOther, setGenderOther] = useState("");
     const [houseNumber, setHouseNumber] = useState("");
     const [street, setStreet] = useState("");
     const [purokSubdivision, setPurokSubdivision] = useState("");
@@ -110,17 +129,27 @@ function Register({ setIsRegisteringState }) {
             return;
         }
 
+        if (gender === "Other / Unknown (please specify)" && !genderOther.trim()) {
+            setError("Please specify your gender when selecting Other / Unknown.");
+            return;
+        }
+
         setIsSubmitting(true);
 
         try {
+            const resolvedGender = gender === "Other / Unknown (please specify)"
+                ? genderOther.trim()
+                : gender;
+
             await registerPatientAccount({
-                username,
                 email,
                 password,
                 surname,
                 firstname,
                 middlename,
                 dob,
+                sex,
+                gender: resolvedGender,
                 houseNumber,
                 street,
                 purokSubdivision,
@@ -142,7 +171,6 @@ function Register({ setIsRegisteringState }) {
             }
 
             // Clear form
-            setUsername("");
             setEmail("");
             setPassword("");
             setConfirmPassword("");
@@ -150,6 +178,9 @@ function Register({ setIsRegisteringState }) {
             setFirstname("");
             setMiddlename("");
             setDob("");
+            setSex(SEX_OPTIONS[2]);
+            setGender(GENDER_OPTIONS[10]);
+            setGenderOther("");
             setHouseNumber("");
             setStreet("");
             setPurokSubdivision("");
@@ -187,11 +218,6 @@ function Register({ setIsRegisteringState }) {
 
                 <div className="space-y-4">
                     {/* Basic Account Info */}
-                    <div>
-                        <label className={labelClass} htmlFor="reg-username">Username</label>
-                        <input id="reg-username" type="text" className={inputClass} value={username} onChange={(e) => setUsername(e.target.value)} required />
-                    </div>
-
                     <div>
                         <label className={labelClass} htmlFor="reg-email">Email Address</label>
                         <input id="reg-email" type="email" className={inputClass} value={email} onChange={(e) => setEmail(e.target.value)} required />
@@ -245,6 +271,51 @@ function Register({ setIsRegisteringState }) {
                             <input id="reg-dob" type="date" className={inputClass} value={dob} onChange={(e) => setDob(e.target.value)} required />
                         </div>
                     </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label className={labelClass} htmlFor="reg-sex">Sex</label>
+                            <select
+                                id="reg-sex"
+                                className={inputClass}
+                                value={sex}
+                                onChange={(e) => setSex(e.target.value)}
+                                required
+                            >
+                                {SEX_OPTIONS.map((option) => (
+                                    <option key={option} value={option}>{option}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <div>
+                            <label className={labelClass} htmlFor="reg-gender">Gender</label>
+                            <select
+                                id="reg-gender"
+                                className={inputClass}
+                                value={gender}
+                                onChange={(e) => setGender(e.target.value)}
+                                required
+                            >
+                                {GENDER_OPTIONS.map((option) => (
+                                    <option key={option} value={option}>{option}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+
+                    {gender === "Other / Unknown (please specify)" && (
+                        <div>
+                            <label className={labelClass} htmlFor="reg-gender-other">Please specify gender</label>
+                            <input
+                                id="reg-gender-other"
+                                type="text"
+                                className={inputClass}
+                                value={genderOther}
+                                onChange={(e) => setGenderOther(e.target.value)}
+                                required
+                            />
+                        </div>
+                    )}
 
                     <div>
                         <label className={labelClass} htmlFor="reg-contact">Contact Number</label>
