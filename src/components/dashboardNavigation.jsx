@@ -32,12 +32,14 @@ function DashboardNavigation() {
 
     if (user?.role === "admin") {
         tabs.splice(3, 0, { label: "Manage Accounts", path: "/manage-accounts", icon: faUsers });
-        tabs.splice(4, 0, { label: "Inbox", path: "/inbox", icon: faInbox });
+        tabs.splice(4, 0, { label: "History", path: "/history", icon: faPhone });
+        tabs.splice(5, 0, { label: "Inbox", path: "/inbox", icon: faInbox });
     }
 
     if (user?.role === "health_worker") {
         tabs.splice(3, 0, { label: "Consultation", path: "/consultation", icon: faStethoscope });
         tabs.splice(4, 0, { label: "Inventory", path: "/inventory", icon: faBox });
+        tabs.splice(5, 0, { label: "History", path: "/history", icon: faPhone });
     }
 
     if (user?.role === "admin") {

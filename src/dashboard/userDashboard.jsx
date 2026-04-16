@@ -7,6 +7,8 @@ import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearSca
 import { QRCodeSVG } from "qrcode.react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faTriangleExclamation, faCalendarDays, faFileMedical, faStethoscope, faBox } from "@fortawesome/free-solid-svg-icons";
+import PatientAccountManagement from "../components/PatientAccountManagement.jsx";
+import HealthWorkerAccountManagement from "../components/HealthWorkerAccountManagement.jsx";
 import {
     bookPatientAppointment,
     changePortalPassword,
@@ -15,6 +17,15 @@ import {
     deleteHealthWorkerAccountByAdmin,
     fetchMyInboxMessages,
     fetchHealthWorkerDirectory,
+    fetchAppointmentFeed,
+    fetchConsultationFeed,
+    fetchPatientDirectory,
+    fetchInventoryItems,
+    upsertInventoryItem,
+    adjustInventoryQuantity,
+    updateMyProfileSettings,
+    getMyProfileBundle,
+    fetchPatientAndHealthWorkerStats,
 } from "../services/supabaseBackendService.js";
 
 ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement);
@@ -141,10 +152,16 @@ const getVisibleInboxMessages = (messages, user) => {
         return [];
     }
 
-    const patientCode = getPatientIdentity(user);
-    return messages.filter(
-        (message) => message.patientCode === patientCode || message.recipientPatientCode === patientCode
-    );
+    return (messages || []).map((message) => ({
+        id: message.id,
+        label: message.subject || "Notification",
+        body: message.body || "",
+        createdAt: message.created_at
+            ? new Date(message.created_at).toLocaleString("en-PH")
+            : "",
+        qrValue: message.qr_value || message.qrValue || "",
+        appointmentCode: message.appointment_id || message.appointmentCode || "",
+    }));
 };
 
 const formatDuration = (seconds) => {
@@ -263,6 +280,46 @@ const buildPatientCode = (seedText) => {
     return `PATIENT${digits}`;
 };
 
+const buildAppointmentPatientSegment = (patientCode) => {
+    const digits = String(patientCode || "").replace(/\D/g, "");
+    return `PA${digits.slice(-4).padStart(4, "0")}`;
+};
+
+const buildAppointmentQrValue = (patientCode) => {
+    const patientSegment = buildAppointmentPatientSegment(patientCode);
+    const randomBytes = new Uint8Array(2);
+
+    if (window.crypto?.getRandomValues) {
+        window.crypto.getRandomValues(randomBytes);
+    } else {
+        randomBytes[0] = Math.floor(Math.random() * 256);
+        randomBytes[1] = Math.floor(Math.random() * 256);
+    }
+
+    const randomCode = Array.from(randomBytes, (byte) => byte.toString(16).padStart(2, "0")).join("").toUpperCase();
+    return `${patientSegment}-${randomCode}`;
+};
+
+const splitAppointmentQrValue = (qrValue) => {
+    const [patientSegment = "", randomCode = ""] = String(qrValue || "").split("-");
+    return { patientSegment, randomCode };
+};
+
+const normalizeAppointmentQrValue = (qrValue) => String(qrValue || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+const getAppointmentLookupCandidates = (appointment) => {
+    const qrValue = String(appointment?.qrValue || "").trim();
+    const patientCode = String(appointment?.patientCode || "").trim();
+    const candidates = [qrValue, patientCode].filter(Boolean);
+
+    if (qrValue.includes("-")) {
+        const [patientSegment = "", randomCode = ""] = qrValue.split("-");
+        candidates.push(`${patientSegment}-${randomCode}`);
+    }
+
+    return Array.from(new Set(candidates.map(normalizeAppointmentQrValue)));
+};
+
 const buildSlotStartDate = (dateKey, timeSlot) => {
     if (!dateKey || !timeSlot) return null;
     const date = parseDateKey(dateKey);
@@ -344,44 +401,51 @@ const hashText = (text) => {
     return Math.abs(hash);
 };
 
-const createMockSymptoms = (seed, bookedCount) => {
-    const symptomCounts = {};
-    const selectable = COMMON_SYMPTOMS.filter((s) => s !== "Others");
-    for (let i = 0; i < bookedCount; i += 1) {
-        const symptom = selectable[(seed + i) % selectable.length];
-        symptomCounts[symptom] = (symptomCounts[symptom] || 0) + 1;
-    }
-    return symptomCounts;
-};
-
-const createMockSlotBookings = (seed, bookedCount) => {
-    const slotBookings = APPOINTMENT_TIME_SLOTS.reduce((acc, slot) => {
-        acc[slot] = 0;
-        return acc;
-    }, {});
-    for (let i = 0; i < bookedCount; i += 1) {
-        const slot = APPOINTMENT_TIME_SLOTS[(seed + i) % APPOINTMENT_TIME_SLOTS.length];
-        slotBookings[slot] += 1;
-    }
-    return slotBookings;
-};
-
 const buildDaySchedule = (date) => {
     const key = formatDateKey(date);
     const mmdd = key.slice(5);
     const holidayName = HOLIDAY_LOOKUP[mmdd] || null;
-    const seed = hashText(key);
     const capacity = DAILY_MAX_APPOINTMENTS;
-    const booked = holidayName ? 0 : seed % (capacity + 1);
+    const booked = 0;
+    const emptySlotBookings = APPOINTMENT_TIME_SLOTS.reduce((accumulator, slot) => {
+        accumulator[slot] = 0;
+        return accumulator;
+    }, {});
 
     return {
         dateKey: key,
         capacity,
         booked,
         holidayName,
-        symptomCounts: holidayName ? {} : createMockSymptoms(seed, booked),
-        slotBookings: holidayName ? {} : createMockSlotBookings(seed, booked),
+        symptomCounts: {},
+        slotBookings: emptySlotBookings,
     };
+};
+
+const buildAppointmentScheduleMap = (appointments = []) => {
+    return appointments.reduce((accumulator, appointment) => {
+        if (!appointment?.dateKey || appointment.status === "cancelled") {
+            return accumulator;
+        }
+
+        const current = accumulator[appointment.dateKey] || buildDaySchedule(parseDateKey(appointment.dateKey));
+        const nextSlotBookings = { ...(current.slotBookings || {}) };
+        const nextSymptomCounts = { ...(current.symptomCounts || {}) };
+
+        nextSlotBookings[appointment.timeSlot] = (nextSlotBookings[appointment.timeSlot] || 0) + 1;
+        (appointment.symptoms || []).forEach((symptom) => {
+            nextSymptomCounts[symptom] = (nextSymptomCounts[symptom] || 0) + 1;
+        });
+
+        accumulator[appointment.dateKey] = {
+            ...current,
+            booked: (current.booked || 0) + 1,
+            symptomCounts: nextSymptomCounts,
+            slotBookings: nextSlotBookings,
+        };
+
+        return accumulator;
+    }, {});
 };
 
 function UserDashboard() {
@@ -404,9 +468,8 @@ function UserDashboard() {
     const [deletingHealthWorkerUserId, setDeletingHealthWorkerUserId] = useState("");
     const [isPatientDirectoryOpen, setIsPatientDirectoryOpen] = useState(false);
     const [lastCreatedLicenseNumber, setLastCreatedLicenseNumber] = useState("");
-    const [createdHealthWorkers, setCreatedHealthWorkers] = useState(() =>
-        loadStoredJson(STORAGE_KEYS.accounts, []).filter((account) => account.role === "health_worker")
-    );
+    const [createdHealthWorkers, setCreatedHealthWorkers] = useState([]);
+    const [patientDirectory, setPatientDirectory] = useState([]);
     const [manageForm, setManageForm] = useState({
         username: "",
         email: "",
@@ -424,10 +487,9 @@ function UserDashboard() {
         const now = new Date();
         return new Date(now.getFullYear(), now.getMonth(), 1);
     });
-    const [scheduleByDate, setScheduleByDate] = useState(() => loadStoredJson(STORAGE_KEYS.scheduleByDate, {}));
-    const [appointments, setAppointments] = useState(() => loadStoredJson(STORAGE_KEYS.appointments, []));
-    const [consultations, setConsultations] = useState(() => loadStoredJson(STORAGE_KEYS.consultations, []));
-    const [inventoryItems, setInventoryItems] = useState(() => loadStoredJson(STORAGE_KEYS.inventory, INITIAL_INVENTORY));
+    const [appointments, setAppointments] = useState([]);
+    const [consultations, setConsultations] = useState([]);
+    const [inventoryItems, setInventoryItems] = useState([]);
     const [selectedDateKey, setSelectedDateKey] = useState("");
     const [selectedTimeSlot, setSelectedTimeSlot] = useState("");
     const [selectedSymptoms, setSelectedSymptoms] = useState([]);
@@ -435,7 +497,8 @@ function UserDashboard() {
     const [appointmentMessage, setAppointmentMessage] = useState("");
     const [scheduleError, setScheduleError] = useState("");
     const [showDailyConsultationHistory, setShowDailyConsultationHistory] = useState(false);
-    const [inboxMessages, setInboxMessages] = useState(() => loadStoredJson(STORAGE_KEYS.inboxMessages, []));
+    const [historySelectedRecordId, setHistorySelectedRecordId] = useState("");
+    const [inboxMessages, setInboxMessages] = useState([]);
     const [adminInboxMessages, setAdminInboxMessages] = useState([]);
     const [activeInboxMessage, setActiveInboxMessage] = useState(null);
     const [qrModalAppointment, setQrModalAppointment] = useState(null);
@@ -447,6 +510,8 @@ function UserDashboard() {
         diagnosis: "",
         medicineId: "",
         medicineQuantity: 1,
+        medicineIntakePerDay: 1,
+        medicineIntakeInstruction: "",
         note: "",
         proofImageDataUrl: "",
         proofImageName: "",
@@ -481,6 +546,7 @@ function UserDashboard() {
     const [deleteError, setDeleteError] = useState("");
     const [currentDateTime, setCurrentDateTime] = useState(() => new Date());
     const visibleInboxMessages = useMemo(() => getVisibleInboxMessages(inboxMessages, user), [inboxMessages, user]);
+    const scheduleByDate = useMemo(() => buildAppointmentScheduleMap(appointments), [appointments]);
     const visibleAdminInboxMessages = useMemo(() => {
         if (user?.role !== "admin") {
             return [];
@@ -499,58 +565,109 @@ function UserDashboard() {
     const activeVisibleInboxMessage = activeInboxMessage && inboxItemsForActiveSelection.some((message) => message.id === activeInboxMessage.id)
         ? activeInboxMessage
         : null;
+    const staffConsultationHistory = useMemo(() => {
+        if (user?.role !== "health_worker" && user?.role !== "admin") {
+            return [];
+        }
 
-    // Frontend-only stats for admin / health workers
+        return consultations
+            .slice()
+            .sort((a, b) => {
+                const aTime = new Date(a.completedAt || a.startedAt || `${a.dateKey || "1970-01-01"}T00:00:00`).getTime();
+                const bTime = new Date(b.completedAt || b.startedAt || `${b.dateKey || "1970-01-01"}T00:00:00`).getTime();
+                return bTime - aTime;
+            });
+    }, [consultations, user?.role]);
+    const selectedStaffHistoryRecord = useMemo(() => {
+        if (!staffConsultationHistory.length) {
+            return null;
+        }
+
+        if (!historySelectedRecordId) {
+            return staffConsultationHistory[0];
+        }
+
+        return (
+            staffConsultationHistory.find((entry) => String(entry.id) === String(historySelectedRecordId)) ||
+            staffConsultationHistory[0]
+        );
+    }, [historySelectedRecordId, staffConsultationHistory]);
+    const recentStaffConsultationHistory = useMemo(() => staffConsultationHistory.slice(0, 5), [staffConsultationHistory]);
+
     useEffect(() => {
-        const timer = setTimeout(() => {
-            if (!user?.role || (user.role !== "admin" && user.role !== "health_worker")) {
-                setStats({ patientCount: 0, healthWorkerCount: 0 });
-                setStatsLoading(false);
-                setStatsError("");
-                return;
+        const isStaffRole = user?.role === "health_worker" || user?.role === "admin";
+        if (!isStaffRole) {
+            setHistorySelectedRecordId("");
+            return;
+        }
+
+        setHistorySelectedRecordId((previousId) => {
+            if (previousId && staffConsultationHistory.some((entry) => String(entry.id) === String(previousId))) {
+                return previousId;
             }
+            return staffConsultationHistory[0]?.id ? String(staffConsultationHistory[0].id) : "";
+        });
+    }, [staffConsultationHistory, user?.role]);
 
-            setStatsLoading(true);
-            setStatsError("");
-            setStats({ patientCount: 128, healthWorkerCount: 12 });
+    // Fetch stats for admin / health workers from database
+    useEffect(() => {
+        if (!user?.role || (user.role !== "admin" && user.role !== "health_worker")) {
+            setStats({ patientCount: 0, healthWorkerCount: 0 });
             setStatsLoading(false);
-        }, 0);
+            setStatsError("");
+            return;
+        }
 
-        return () => {
-            clearTimeout(timer);
-        };
+        setStatsLoading(true);
+        setStatsError("");
+
+        fetchPatientAndHealthWorkerStats()
+            .then((data) => {
+                setStats(data);
+                setStatsLoading(false);
+            })
+            .catch((error) => {
+                setStatsError(error?.message || "Unable to load statistics.");
+                setStatsLoading(false);
+            });
     }, [user?.role]);
 
-    // Frontend-only profile data when visiting profile tab
+    // Fetch profile data from Supabase when visiting profile tab
     useEffect(() => {
-        const timer = setTimeout(() => {
-            if (path !== "/profile" || !user) {
-                setProfile(null);
-                setProfileLoading(false);
-                setProfileError("");
-                return;
-            }
-
-            setProfileLoading(true);
-            setProfileError("");
-            setProfile({
-                username: user.username,
-                surname: user.surname || "",
-                firstname: user.firstname || "",
-                middlename: user.middlename || "",
-                dob: user.dob || "",
-                age: calculateAge(user.dob),
-                address: buildAddressLine(user),
-                email: user.role === "admin" ? "admin@sanperfecto.local" : "",
-                role: user.role,
-                profileImageUrl: user.avatarDataUrl || "",
-            });
+        if (path !== "/profile" || !user) {
+            setProfile(null);
             setProfileLoading(false);
-        }, 0);
+            setProfileError("");
+            return;
+        }
 
-        return () => {
-            clearTimeout(timer);
-        };
+        setProfileLoading(true);
+        setProfileError("");
+
+        getMyProfileBundle()
+            .then((bundle) => {
+                setProfile({
+                    username: bundle.username || "",
+                    surname: bundle.surname || "",
+                    firstname: bundle.firstname || "",
+                    middlename: bundle.middlename || "",
+                    dob: bundle.dob || "",
+                    age: calculateAge(bundle.dob),
+                    address: buildAddressLine(bundle),
+                    email: bundle.email || "",
+                    contactNumber: bundle.contactNumber || "",
+                    role: bundle.role || "",
+                    profileImageUrl: bundle.avatarUrl || "",
+                    patientCode: bundle.patientCode || "",
+                    workerId: bundle.workerId || "",
+                    adminId: bundle.adminId || "",
+                });
+                setProfileLoading(false);
+            })
+            .catch((error) => {
+                setProfileError(error?.message || "Unable to load profile information.");
+                setProfileLoading(false);
+            });
     }, [path, user]);
 
     const pieData = useMemo(() => {
@@ -608,7 +725,7 @@ function UserDashboard() {
             };
         }
 
-        const patientAccounts = loadStoredJson(STORAGE_KEYS.accounts, []).filter((account) => account.role === "patient");
+        const patientAccounts = patientDirectory;
         const patientMap = patientAccounts.reduce((acc, account) => {
             const code = account.patientCode || account.patientId;
             if (code) {
@@ -703,11 +820,7 @@ function UserDashboard() {
             topDiagnosisByAgeRangeData,
             attendanceVsAbsenceData,
         };
-    }, [appointments, consultations, user?.role]);
-
-    useEffect(() => {
-        window.localStorage.setItem(STORAGE_KEYS.scheduleByDate, JSON.stringify(scheduleByDate));
-    }, [scheduleByDate]);
+    }, [appointments, consultations, patientDirectory, user?.role]);
 
     useEffect(() => {
         window.localStorage.setItem(STORAGE_KEYS.appointments, JSON.stringify(appointments));
@@ -724,6 +837,55 @@ function UserDashboard() {
     useEffect(() => {
         window.localStorage.setItem(STORAGE_KEYS.inboxMessages, JSON.stringify(inboxMessages));
     }, [inboxMessages]);
+
+    useEffect(() => {
+        if (!user?.role) {
+            setAppointments([]);
+            setConsultations([]);
+            setInventoryItems([]);
+            setInboxMessages([]);
+            setPatientDirectory([]);
+            return;
+        }
+
+        let alive = true;
+
+        const loadDashboardCollections = async () => {
+            try {
+                const [appointmentRows, consultationRows, inboxRows, inventoryRows, patientRows] = await Promise.all([
+                    fetchAppointmentFeed(),
+                    fetchConsultationFeed(),
+                    fetchMyInboxMessages(),
+                    user.role === "patient" ? Promise.resolve([]) : fetchInventoryItems(),
+                    user.role === "admin" || user.role === "health_worker" ? fetchPatientDirectory() : Promise.resolve([]),
+                ]);
+
+                if (!alive) {
+                    return;
+                }
+
+                setAppointments(appointmentRows || []);
+                setConsultations(consultationRows || []);
+                setInboxMessages(inboxRows || []);
+                setInventoryItems(inventoryRows || []);
+                setPatientDirectory(patientRows || []);
+            } catch (loadError) {
+                if (!alive) {
+                    return;
+                }
+
+                setScheduleError(loadError?.message || "Unable to load dashboard data.");
+            }
+        };
+
+        loadDashboardCollections();
+        const refreshTimer = window.setInterval(loadDashboardCollections, 30000);
+
+        return () => {
+            alive = false;
+            window.clearInterval(refreshTimer);
+        };
+    }, [user?.role]);
 
     useEffect(() => {
         const timer = setInterval(() => {
@@ -1008,12 +1170,55 @@ function UserDashboard() {
                             </div>
                         </div>
                     </div>
+
+                    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-4">
+                        <div className="flex items-center justify-between gap-3">
+                            <h2 className="text-lg font-bold text-slate-800">Consultation history</h2>
+                            <Link to="/history" className="text-sm font-semibold text-brand-red hover:text-brand-dark">Open History</Link>
+                        </div>
+                        {recentStaffConsultationHistory.length === 0 ? (
+                            <p className="text-sm text-slate-500">No consultation records yet.</p>
+                        ) : (
+                            <div className="space-y-2">
+                                {recentStaffConsultationHistory.map((entry) => (
+                                    <article key={`admin-consult-history-${entry.id}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                        <p className="text-sm font-bold text-slate-800">{entry.patientName}</p>
+                                        <p className="text-sm text-slate-700 mt-1">Diagnosis: {entry.diagnosis || "N/A"}</p>
+                                        <p className="text-xs text-slate-500 mt-1">{formatLongDate(entry.dateKey)} at {entry.timeSlot || "N/A"}</p>
+                                    </article>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+
+                    <div className="grid gap-6 md:grid-cols-2">
+                        <Link
+                            to="/patient-accounts"
+                            className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 hover:shadow-md hover:border-slate-300 transition-all"
+                        >
+                            <div className="mb-4 w-11 h-11 rounded-xl bg-pink-50 flex items-center justify-center">
+                                <FontAwesomeIcon icon={faFileMedical} className="w-5 h-5 text-pink-600" />
+                            </div>
+                            <h3 className="font-bold text-lg text-slate-800">Patient Accounts</h3>
+                            <p className="text-sm text-slate-600 mt-2">Manage patient accounts, view consultations, audit logs, and administrative controls.</p>
+                        </Link>
+                        <Link
+                            to="/health-worker-accounts"
+                            className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 hover:shadow-md hover:border-slate-300 transition-all"
+                        >
+                            <div className="mb-4 w-11 h-11 rounded-xl bg-green-50 flex items-center justify-center">
+                                <FontAwesomeIcon icon={faStethoscope} className="w-5 h-5 text-green-600" />
+                            </div>
+                            <h3 className="font-bold text-lg text-slate-800">Health Worker Accounts</h3>
+                            <p className="text-sm text-slate-600 mt-2">View health worker information, performance stats, and activity logs.</p>
+                        </Link>
+                    </div>
                 </div>
             );
         }
         if (user.role === "health_worker") {
-            const patientDirectory = loadStoredJson(STORAGE_KEYS.accounts, [])
-                .filter((account) => account.role === "patient")
+            const patientDirectoryList = patientDirectory
+                .slice()
                 .sort((a, b) => {
                     const nameA = `${a.surname || ""} ${a.firstname || ""}`.trim().toLowerCase();
                     const nameB = `${b.surname || ""} ${b.firstname || ""}`.trim().toLowerCase();
@@ -1070,6 +1275,36 @@ function UserDashboard() {
                             <h3 className="font-bold text-lg text-slate-800">Inventory</h3>
                             <p className="text-sm text-slate-500 mt-1">View medicines and assistive devices.</p>
                         </Link>
+                        <Link
+                            to="/history"
+                            className="bg-white p-5 rounded-2xl border border-slate-200 shadow-sm hover:shadow-md hover:border-slate-300 transition-all"
+                        >
+                            <div className="mb-3 w-11 h-11 rounded-xl bg-amber-50 flex items-center justify-center">
+                                <FontAwesomeIcon icon={faFileMedical} className="w-5 h-5 text-amber-600" />
+                            </div>
+                            <h3 className="font-bold text-lg text-slate-800">History</h3>
+                            <p className="text-sm text-slate-500 mt-1">View full consultation history and outcomes.</p>
+                        </Link>
+                    </div>
+
+                    <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-4">
+                        <div className="flex items-center justify-between gap-3">
+                            <h2 className="text-lg font-bold text-slate-800">Consultation history</h2>
+                            <Link to="/history" className="text-sm font-semibold text-brand-red hover:text-brand-dark">Open History</Link>
+                        </div>
+                        {recentStaffConsultationHistory.length === 0 ? (
+                            <p className="text-sm text-slate-500">No consultation records yet.</p>
+                        ) : (
+                            <div className="space-y-2">
+                                {recentStaffConsultationHistory.map((entry) => (
+                                    <article key={`worker-consult-history-${entry.id}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                        <p className="text-sm font-bold text-slate-800">{entry.patientName}</p>
+                                        <p className="text-sm text-slate-700 mt-1">Diagnosis: {entry.diagnosis || "N/A"}</p>
+                                        <p className="text-xs text-slate-500 mt-1">{formatLongDate(entry.dateKey)} at {entry.timeSlot || "N/A"}</p>
+                                    </article>
+                                ))}
+                            </div>
+                        )}
                     </div>
 
                     <div className="grid gap-4 lg:grid-cols-2">
@@ -1152,7 +1387,7 @@ function UserDashboard() {
                                     <p className="text-sm text-slate-600">No registered patients found.</p>
                                 ) : (
                                     <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                                        {patientDirectory.map((patient, index) => {
+                                        {patientDirectoryList.map((patient, index) => {
                                             const fullName = `${patient.surname || "N/A"}, ${patient.firstname || "N/A"}, ${patient.middlename || "N/A"}`;
                                             const patientId = patient.patientCode || patient.patientId || "N/A";
                                             return (
@@ -1203,18 +1438,34 @@ function UserDashboard() {
             .sort((a, b) => a.slotStartAt - b.slotStartAt)[0];
 
         const recentInbox = visibleInboxMessages.slice(0, 3);
-        const cycleMinutes = 6 * 60;
+        const patientMedicineConsultations = consultations
+            .filter((entry) => entry.patientCode === patientCode && (entry.medicineId || entry.medicineName))
+            .sort((a, b) => {
+                const aTime = new Date(a.completedAt || a.createdAt || 0).getTime();
+                const bTime = new Date(b.completedAt || b.createdAt || 0).getTime();
+                return bTime - aTime;
+            });
+
+        const latestMedication = patientMedicineConsultations[0] || null;
+        const hasMedicationReminder = Boolean(latestMedication);
+        const intakePerDay = latestMedication ? Number(latestMedication.medicineIntakePerDay || 0) : 0;
+        const intakeCycleMinutes = intakePerDay > 0 ? Math.floor((24 * 60) / intakePerDay) : 0;
         const elapsedMinutes = currentDateTime.getHours() * 60 + currentDateTime.getMinutes();
-        const remainingCycleMinutes = cycleMinutes - (elapsedMinutes % cycleMinutes || cycleMinutes);
+        const remainingCycleMinutes = intakeCycleMinutes > 0
+            ? intakeCycleMinutes - (elapsedMinutes % intakeCycleMinutes || intakeCycleMinutes)
+            : 0;
         const reminderHours = Math.floor(remainingCycleMinutes / 60);
         const reminderMinutes = remainingCycleMinutes % 60;
-        const useNextPhrase = reminderHours >= 4;
-        const assumedParacetamolIntake = Math.min(20, Math.floor(elapsedMinutes / cycleMinutes) + 1);
-        const paracetamolRemaining = Math.max(0, 20 - assumedParacetamolIntake);
-        const minutesSinceLastIntake = elapsedMinutes % cycleMinutes;
+        const minutesSinceLastIntake = intakeCycleMinutes > 0 ? elapsedMinutes % intakeCycleMinutes : 0;
         const passedHours = Math.floor(minutesSinceLastIntake / 60);
         const passedMinutes = minutesSinceLastIntake % 60;
-        const intakeProgressPercent = Math.min(100, Math.round((assumedParacetamolIntake / 20) * 100));
+        const intakeProgressPercent = intakeCycleMinutes > 0
+            ? Math.min(100, Math.round((minutesSinceLastIntake / intakeCycleMinutes) * 100))
+            : 0;
+        const intakeFrequencyLabel = intakePerDay > 0
+            ? `${intakePerDay}x/day`
+            : "";
+        const medicineLabel = latestMedication?.medicineName || "your prescribed medicine";
 
         return (
             <div className="space-y-6">
@@ -1268,23 +1519,35 @@ function UserDashboard() {
 
                     <div className="bg-linear-to-br from-red-600 to-red-700 p-6 rounded-2xl shadow-sm text-white xl:col-span-2">
                         <h3 className="font-bold text-lg">Medicine Intake Reminder</h3>
-                        <p className="text-sm text-red-100 mt-2 leading-relaxed">
-                            {useNextPhrase
-                                ? `You are going to take paracetamol biogesic in the next ${reminderHours} hours ${reminderMinutes} minutes.`
-                                : `You are going to take paracetamol biogesic in ${reminderHours} hour${reminderHours === 1 ? "" : "s"} and ${reminderMinutes} minutes.`}
-                        </p>
-                        <div className="mt-4">
-                            <div className="flex items-center justify-between text-xs text-red-100 mb-1">
-                                <span>Assumed intake: {assumedParacetamolIntake}</span>
-                                <span>Remaining: {paracetamolRemaining}</span>
-                            </div>
-                            <div className="h-2 rounded-full bg-red-400/60 overflow-hidden">
-                                <div className="h-full bg-white" style={{ width: `${intakeProgressPercent}%` }} />
-                            </div>
-                            <p className="text-xs text-red-100 mt-2">
-                                Time passed since last intake: {passedHours} hour{passedHours === 1 ? "" : "s"} {passedMinutes} minutes
-                            </p>
-                        </div>
+                        {hasMedicationReminder ? (
+                            <>
+                                <p className="text-sm text-red-100 mt-2 leading-relaxed">
+                                    {intakePerDay > 3
+                                        ? `Take ${medicineLabel} ${intakeFrequencyLabel}.`
+                                        : `Take ${medicineLabel} ${intakeFrequencyLabel}. Next intake in ${reminderHours} hour${reminderHours === 1 ? "" : "s"} and ${reminderMinutes} minutes.`}
+                                </p>
+                                {intakePerDay > 3 ? (
+                                    <p className="text-xs text-red-100 mt-3">
+                                        {latestMedication.medicineIntakeInstruction || "Follow the custom intake instruction from your health worker."}
+                                    </p>
+                                ) : (
+                                    <div className="mt-4">
+                                        <div className="flex items-center justify-between text-xs text-red-100 mb-1">
+                                            <span>Frequency: {intakeFrequencyLabel}</span>
+                                            <span>{latestMedication.medicineQuantity} dispensed</span>
+                                        </div>
+                                        <div className="h-2 rounded-full bg-red-400/60 overflow-hidden">
+                                            <div className="h-full bg-white" style={{ width: `${intakeProgressPercent}%` }} />
+                                        </div>
+                                        <p className="text-xs text-red-100 mt-2">
+                                            Time passed since last intake: {passedHours} hour{passedHours === 1 ? "" : "s"} {passedMinutes} minutes
+                                        </p>
+                                    </div>
+                                )}
+                            </>
+                        ) : (
+                            <div className="mt-4 h-24" />
+                        )}
                     </div>
                 </section>
 
@@ -1337,7 +1600,13 @@ function UserDashboard() {
                             </div>
                             <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                                 <p className="text-xs uppercase tracking-wide text-slate-500">Medication Cycle</p>
-                                <p className="text-sm font-semibold text-slate-800 mt-1">Next intake in {reminderHours}h {reminderMinutes}m</p>
+                                <p className="text-sm font-semibold text-slate-800 mt-1">
+                                    {hasMedicationReminder
+                                        ? intakePerDay > 3
+                                            ? "Custom intake schedule"
+                                            : `Next intake in ${reminderHours}h ${reminderMinutes}m`
+                                        : ""}
+                                </p>
                             </div>
                         </div>
                     </div>
@@ -1432,57 +1701,32 @@ function UserDashboard() {
             reader.readAsDataURL(file);
         };
 
-        const saveSettings = (e) => {
+        const saveSettings = async (e) => {
             e.preventDefault();
             setSettingsError("");
             setSettingsMessage("");
 
             try {
-                const accounts = loadStoredJson(STORAGE_KEYS.accounts, []);
-                const updatedAccounts = accounts.map((account) => {
-                    const sameRole = account.role === user?.role;
-                    const sameIdentity =
-                        account.username === user?.username ||
-                        account.email === user?.email ||
-                        account.patientCode === user?.patientCode ||
-                        account.workerId === user?.workerId ||
-                        account.adminId === user?.adminId;
-
-                    if (!sameRole || !sameIdentity) {
-                        return account;
-                    }
-
-                    return {
-                        ...account,
-                        surname: settingsDraft.surname,
-                        firstname: settingsDraft.firstname,
-                        middlename: settingsDraft.middlename,
-                        address: {
-                            ...(typeof account.address === "object" ? account.address : {}),
-                            houseNumber: settingsDraft.houseNumber,
-                            street: settingsDraft.streetName,
-                            streetName: settingsDraft.streetName,
-                            purokSubdivision: settingsDraft.purokSubdivision,
-                        },
-                        fullAddress: `${settingsDraft.houseNumber}, ${settingsDraft.streetName}, ${settingsDraft.purokSubdivision}, BARANGAY SAN PERFECTO, SAN JUAN CITY, METRO MANILA, NCR`,
-                        email: settingsDraft.email,
-                        dob: settingsDraft.dob,
-                        password: settingsDraft.password,
-                        pinCode: settingsDraft.pinCode,
-                        adminId: settingsDraft.adminId,
-                        systemLicenseNumber: settingsDraft.licenseId,
-                        workerId: settingsDraft.licenseId,
-                        avatarDataUrl: settingsDraft.avatarDataUrl,
-                        theme: settingsDraft.theme,
-                    };
-                });
-
-                window.localStorage.setItem(STORAGE_KEYS.accounts, JSON.stringify(updatedAccounts));
-                window.localStorage.setItem(storageKey, JSON.stringify(settingsDraft));
-                updateUser({
+                const bundle = await updateMyProfileSettings({
                     surname: settingsDraft.surname,
                     firstname: settingsDraft.firstname,
                     middlename: settingsDraft.middlename,
+                    houseNumber: settingsDraft.houseNumber,
+                    streetName: settingsDraft.streetName,
+                    purokSubdivision: settingsDraft.purokSubdivision,
+                    email: settingsDraft.email,
+                    dob: settingsDraft.dob,
+                    pinCode: settingsDraft.pinCode,
+                    adminId: settingsDraft.adminId,
+                    licenseId: settingsDraft.licenseId,
+                    avatarDataUrl: settingsDraft.avatarDataUrl,
+                });
+
+                updateUser({
+                    surname: bundle.surname || settingsDraft.surname,
+                    firstname: bundle.firstname || settingsDraft.firstname,
+                    middlename: bundle.middlename || settingsDraft.middlename,
+                    dob: bundle.dob || settingsDraft.dob,
                     address: {
                         houseNumber: settingsDraft.houseNumber,
                         street: settingsDraft.streetName,
@@ -1490,17 +1734,15 @@ function UserDashboard() {
                         purokSubdivision: settingsDraft.purokSubdivision,
                     },
                     fullAddress: `${settingsDraft.houseNumber}, ${settingsDraft.streetName}, ${settingsDraft.purokSubdivision}, BARANGAY SAN PERFECTO, SAN JUAN CITY, METRO MANILA, NCR`,
-                    email: settingsDraft.email,
-                    dob: settingsDraft.dob,
-                    password: settingsDraft.password,
-                    pinCode: settingsDraft.pinCode,
-                    adminId: settingsDraft.adminId,
-                    systemLicenseNumber: settingsDraft.licenseId,
-                    workerId: settingsDraft.licenseId,
-                    avatarDataUrl: settingsDraft.avatarDataUrl,
-                    theme: settingsDraft.theme,
+                    email: bundle.email || settingsDraft.email,
+                    pinCode: bundle.pinCode || settingsDraft.pinCode,
+                    adminId: bundle.adminId || settingsDraft.adminId,
+                    systemLicenseNumber: bundle.systemLicenseNumber || settingsDraft.licenseId,
+                    workerId: bundle.workerId || settingsDraft.licenseId,
+                    avatarDataUrl: bundle.avatarDataUrl || settingsDraft.avatarDataUrl,
                 });
-                setSettingsMessage("Settings saved locally.");
+                window.localStorage.setItem(storageKey, JSON.stringify(settingsDraft));
+                setSettingsMessage("Settings saved successfully.");
             } catch {
                 setSettingsError("Unable to save settings.");
             }
@@ -2256,7 +2498,6 @@ function UserDashboard() {
                 return;
             }
 
-            const nextBooked = selectedSchedule.booked + 1;
             const nextSymptomCounts = { ...(selectedSchedule.symptomCounts || {}) };
             const nextSlotBookings = { ...(selectedSchedule.slotBookings || {}) };
             selectedSymptoms.forEach((symptom) => {
@@ -2270,19 +2511,34 @@ function UserDashboard() {
 
             const patientName = buildPatientDisplayName(user);
             const patientCode = user?.patientCode || buildPatientCode(user?.username || patientName);
-            const qrValue = patientCode;
+            let qrValue = buildAppointmentQrValue(patientCode);
             let appointmentId = `${selectedDateKey}-${selectedTimeSlot}-${Date.now()}`;
 
             try {
-                const persistedAppointmentId = await bookPatientAppointment({
-                    scheduledDate: selectedDateKey,
-                    timeSlot: selectedTimeSlot,
-                    symptoms: selectedSymptoms,
-                    otherSymptom: otherSymptomText || null,
-                });
+                for (let attempt = 0; attempt < 5; attempt += 1) {
+                    try {
+                        const persistedAppointmentId = await bookPatientAppointment({
+                            scheduledDate: selectedDateKey,
+                            timeSlot: selectedTimeSlot,
+                            symptoms: selectedSymptoms,
+                            otherSymptom: otherSymptomText || null,
+                            qrValue,
+                        });
 
-                if (persistedAppointmentId) {
-                    appointmentId = persistedAppointmentId;
+                        if (persistedAppointmentId) {
+                            appointmentId = persistedAppointmentId;
+                        }
+                        break;
+                    } catch (bookingError) {
+                        const message = bookingError?.message || "";
+                        if (/appointments_qr_value_key/i.test(message) || /duplicate appointment qr value/i.test(message)) {
+                            qrValue = buildAppointmentQrValue(patientCode);
+                            if (attempt < 4) {
+                                continue;
+                            }
+                        }
+                        throw bookingError;
+                    }
                 }
             } catch (bookingError) {
                 setScheduleError(bookingError?.message || "Unable to save appointment in backend.");
@@ -2301,16 +2557,6 @@ function UserDashboard() {
                 status: "booked",
                 createdAt: new Date().toISOString(),
             };
-
-            setScheduleByDate((prev) => ({
-                ...prev,
-                [selectedDateKey]: {
-                    ...selectedSchedule,
-                    booked: nextBooked,
-                    symptomCounts: nextSymptomCounts,
-                    slotBookings: nextSlotBookings,
-                },
-            }));
 
             setAppointments((prev) => [bookedAppointment, ...prev]);
 
@@ -2648,10 +2894,13 @@ function UserDashboard() {
 
         const bookedAppointments = appointments.filter((appointment) => appointment.status === "booked");
         const matchingAppointments = consultationScannedPatientCode
-            ? bookedAppointments.filter((appointment) => appointment.patientCode === consultationScannedPatientCode)
+            ? bookedAppointments.filter((appointment) => {
+                const patientCode = String(appointment?.patientCode || appointment?.patientId || "").trim();
+                return patientCode === consultationScannedPatientCode;
+            })
             : [];
         const medicineOptions = inventoryItems.filter((item) => item.category === "medicine" && item.quantity > 0);
-        const patientAccounts = loadStoredJson(STORAGE_KEYS.accounts, []).filter((account) => account.role === "patient");
+        const patientAccounts = patientDirectory;
         const selectedPatientProfile = consultationTarget
             ? patientAccounts.find(
                 (account) =>
@@ -2673,7 +2922,10 @@ function UserDashboard() {
                 return;
             }
 
-            const matchedAppointment = bookedAppointments.find((appointment) => appointment.qrValue === code);
+            const normalizedCode = normalizeAppointmentQrValue(code);
+            const matchedAppointment = bookedAppointments.find((appointment) =>
+                getAppointmentLookupCandidates(appointment).includes(normalizedCode)
+            );
             if (!matchedAppointment) {
                 setConsultationError("This QR code is not linked to a booked appointment.");
                 setConsultationTarget(null);
@@ -2733,6 +2985,8 @@ function UserDashboard() {
 
             const diagnosis = consultationForm.diagnosis.trim();
             const note = consultationForm.note.trim();
+            const intakePerDay = Number(consultationForm.medicineIntakePerDay);
+            const intakeInstruction = consultationForm.medicineIntakeInstruction.trim();
             const selectedMedicine = inventoryItems.find((item) => item.id === consultationForm.medicineId && item.category === "medicine");
             const quantity = Number(consultationForm.medicineQuantity);
 
@@ -2754,6 +3008,14 @@ function UserDashboard() {
             }
             if (!note) {
                 setConsultationError("Please add a note to the patient.");
+                return;
+            }
+            if (!Number.isInteger(intakePerDay) || intakePerDay <= 0) {
+                setConsultationError("Intake/day must be a positive whole number.");
+                return;
+            }
+            if (intakePerDay > 3 && !intakeInstruction) {
+                setConsultationError("Please specify the intake instruction for more than 3x/day.");
                 return;
             }
             if (!consultationStartedAt) {
@@ -2779,6 +3041,8 @@ function UserDashboard() {
                     proofImageUrl: consultationForm.proofImageDataUrl,
                     medicineItemId: selectedMedicine.id,
                     medicineQuantity: quantity,
+                    medicineIntakePerDay: intakePerDay,
+                    medicineIntakeInstruction: intakeInstruction,
                 });
 
                 if (persistedConsultationId) {
@@ -2800,6 +3064,8 @@ function UserDashboard() {
                 medicineId: selectedMedicine.id,
                 medicineName: selectedMedicine.name,
                 medicineQuantity: quantity,
+                medicineIntakePerDay: intakePerDay,
+                medicineIntakeInstruction: intakeInstruction,
                 note,
                 workerName: buildPatientDisplayName(user),
                 startedAt: consultationStartedAt,
@@ -2837,6 +3103,8 @@ function UserDashboard() {
                 diagnosis: "",
                 medicineId: medicineOptions[0]?.id || "",
                 medicineQuantity: 1,
+                medicineIntakePerDay: 1,
+                medicineIntakeInstruction: "",
                 note: "",
                 proofImageDataUrl: "",
                 proofImageName: "",
@@ -2850,6 +3118,12 @@ function UserDashboard() {
                 <div>
                     <h1 className="text-3xl font-bold text-slate-900 mb-1">Consultation</h1>
                     <p className="text-slate-600">Verify the booked patient QR code, then complete diagnosis and medicine dispense.</p>
+                    <Link
+                        to="/history"
+                        className="inline-flex items-center mt-3 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                        Open Consultation History
+                    </Link>
                 </div>
 
                 <div className="grid gap-6 lg:grid-cols-2">
@@ -2933,8 +3207,22 @@ function UserDashboard() {
                             <p className="text-slate-600">Verify a booked QR code and select an appointment to unlock the consultation form.</p>
                         ) : (
                             <>
-                                <div className="rounded-xl bg-slate-50 border border-slate-200 p-4 text-sm text-slate-700 space-y-1">
-                                    <p><span className="font-semibold">Patient:</span> {consultationTarget.patientName}</p>
+                                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700 space-y-2">
+                                    <p className="font-bold text-slate-800">Patient Information</p>
+                                    <p>
+                                        <span className="font-semibold">Name:</span>{" "}
+                                        {selectedPatientProfile
+                                            ? `${selectedPatientProfile.surname || "N/A"}, ${selectedPatientProfile.firstname || "N/A"}, ${selectedPatientProfile.middlename || "N/A"}`
+                                            : consultationTarget.patientName}
+                                    </p>
+                                    <p><span className="font-semibold">Patient ID:</span> {selectedPatientProfile?.patientCode || selectedPatientProfile?.patientId || consultationTarget.patientCode}</p>
+                                    <p><span className="font-semibold">DOB / Age:</span> {selectedPatientProfile?.dob || "N/A"} / {calculateAge(selectedPatientProfile?.dob)}</p>
+                                    <p><span className="font-semibold">Contact:</span> {selectedPatientProfile?.contactNumber || "N/A"}</p>
+                                    <p><span className="font-semibold">Address:</span> {selectedPatientProfile ? buildAddressLine(selectedPatientProfile) : "N/A"}</p>
+                                </div>
+
+                                <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-700 space-y-1">
+                                    <p className="font-bold text-slate-800">Consultation Data</p>
                                     <p><span className="font-semibold">Schedule:</span> {formatLongDate(consultationTarget.dateKey)} at {consultationTarget.timeSlot}</p>
                                     <p><span className="font-semibold">Symptoms:</span> {consultationTarget.symptoms.join(", ")}</p>
                                 </div>
@@ -2971,7 +3259,7 @@ function UserDashboard() {
                                     />
                                 </div>
 
-                                <div className="grid gap-3 sm:grid-cols-2">
+                                <div className="grid gap-3 sm:grid-cols-3">
                                     <div>
                                         <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="medicine">Prescribe medicine</label>
                                         <select
@@ -2999,7 +3287,35 @@ function UserDashboard() {
                                             className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red"
                                         />
                                     </div>
+                                    <div>
+                                        <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="intake-frequency">Intake / day</label>
+                                        <input
+                                            id="intake-frequency"
+                                            type="number"
+                                            min="1"
+                                            value={consultationForm.medicineIntakePerDay}
+                                            onChange={(e) => setConsultationForm((prev) => ({ ...prev, medicineIntakePerDay: e.target.value }))}
+                                            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red"
+                                        />
+                                        <p className="text-xs text-slate-500 mt-1">Quick choices: 1, 2, or 3. For more than 3, provide instruction below.</p>
+                                    </div>
                                 </div>
+
+                                {Number(consultationForm.medicineIntakePerDay) > 3 && (
+                                    <div>
+                                        <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="more-than-3x-note">
+                                            Specify intake instruction (required)
+                                        </label>
+                                        <input
+                                            id="more-than-3x-note"
+                                            type="text"
+                                            value={consultationForm.medicineIntakeInstruction}
+                                            onChange={(e) => setConsultationForm((prev) => ({ ...prev, medicineIntakeInstruction: e.target.value }))}
+                                            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red"
+                                            placeholder="Example: take every 4 hours while awake"
+                                        />
+                                    </div>
+                                )}
 
                                 <div>
                                     <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="note">Note to patient</label>
@@ -3085,7 +3401,12 @@ function UserDashboard() {
         const visibleItems = inventoryItems.filter((item) => inventoryViewMode === "medicine" ? item.category === "medicine" : true);
         const isAdmin = user?.role === "admin";
 
-        const addInventoryItem = (e) => {
+        const refreshInventory = async () => {
+            const latestInventory = await fetchInventoryItems();
+            setInventoryItems(latestInventory);
+        };
+
+        const addInventoryItem = async (e) => {
             e.preventDefault();
             setInventoryError("");
             setInventoryMessage("");
@@ -3099,21 +3420,23 @@ function UserDashboard() {
                 return;
             }
 
-            setInventoryItems((prev) => [
-                {
-                    id: `${inventoryForm.category}-${inventoryForm.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now()}`,
+            try {
+                await upsertInventoryItem({
                     name: inventoryForm.name.trim(),
                     category: inventoryForm.category,
                     quantity: Number(inventoryForm.quantity),
                     unit: inventoryForm.unit.trim() || "pcs",
-                },
-                ...prev,
-            ]);
-            setInventoryMessage("Inventory item added.");
-            setInventoryForm({ name: "", category: "medicine", quantity: 0, unit: "pcs" });
+                });
+
+                await refreshInventory();
+                setInventoryMessage("Inventory item saved.");
+                setInventoryForm({ name: "", category: "medicine", quantity: 0, unit: "pcs" });
+            } catch (saveError) {
+                setInventoryError(saveError?.message || "Unable to save inventory item.");
+            }
         };
 
-        const updateInventoryAmount = (itemId, mode) => {
+        const updateInventoryAmount = async (itemId, mode) => {
             const amount = Number(inventoryAmounts[itemId] || 0);
             if (!Number.isInteger(amount) || amount <= 0) {
                 setInventoryError("Type a valid amount.");
@@ -3121,25 +3444,23 @@ function UserDashboard() {
             }
 
             setInventoryError("");
-            setInventoryItems((prev) =>
-                prev.map((item) =>
-                    item.id === itemId
-                        ? {
-                              ...item,
-                              quantity:
-                                  mode === "add"
-                                      ? item.quantity + amount
-                                      : Math.max(0, item.quantity - amount),
-                          }
-                        : item
-                )
-            );
-            setInventoryAmounts((prev) => ({ ...prev, [itemId]: "" }));
-            setInventoryMessage(
-                mode === "add"
-                    ? `Added ${amount} item(s) to inventory.`
-                    : `Reduced ${amount} item(s) from inventory.`
-            );
+            try {
+                await adjustInventoryQuantity({
+                    itemId,
+                    quantity: amount,
+                    movementType: mode === "add" ? "add" : "reduce",
+                });
+
+                await refreshInventory();
+                setInventoryAmounts((prev) => ({ ...prev, [itemId]: "" }));
+                setInventoryMessage(
+                    mode === "add"
+                        ? `Added ${amount} item(s) to inventory.`
+                        : `Reduced ${amount} item(s) from inventory.`
+                );
+            } catch (saveError) {
+                setInventoryError(saveError?.message || "Unable to update inventory quantity.");
+            }
         };
 
         return (
@@ -3257,6 +3578,101 @@ function UserDashboard() {
     };
 
     const renderHistory = () => {
+        if (user?.role === "health_worker" || user?.role === "admin") {
+            const selectedRecord = selectedStaffHistoryRecord;
+            const startedAtLabel = selectedRecord?.startedAt
+                ? new Date(selectedRecord.startedAt).toLocaleString("en-PH")
+                : "N/A";
+            const completedAtLabel = selectedRecord?.completedAt
+                ? new Date(selectedRecord.completedAt).toLocaleString("en-PH")
+                : "N/A";
+            const selectedPatientHistoryProfile = selectedRecord
+                ? patientDirectory.find((account) => {
+                    const accountCode = account.patientCode || account.patientId || "";
+                    return accountCode && accountCode === selectedRecord.patientCode;
+                })
+                : null;
+            const resolvedPatientContact =
+                selectedRecord?.patientContact || selectedPatientHistoryProfile?.contactNumber || "N/A";
+            const resolvedPatientAddress = selectedRecord?.patientAddress
+                || (selectedPatientHistoryProfile ? buildAddressLine(selectedPatientHistoryProfile) : "N/A");
+
+            return (
+                <div className="space-y-6">
+                    <div>
+                        <h1 className="text-3xl font-bold text-slate-900 mb-1">History</h1>
+                        <p className="text-slate-600">All completed consultation records.</p>
+                    </div>
+
+                    {staffConsultationHistory.length === 0 ? (
+                        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 text-slate-600">
+                            No completed consultations yet.
+                        </div>
+                    ) : (
+                        <div className="grid gap-4 lg:grid-cols-12">
+                            <div className="lg:col-span-5 bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+                                <h2 className="text-base font-bold text-slate-800 mb-3">Consultation list</h2>
+                                <div className="space-y-2 max-h-130 overflow-y-auto pr-1">
+                                    {staffConsultationHistory.map((entry) => {
+                                        const isActive = String(entry.id) === String(selectedRecord?.id);
+                                        return (
+                                            <button
+                                                key={`staff-history-${entry.id}`}
+                                                type="button"
+                                                onClick={() => setHistorySelectedRecordId(String(entry.id))}
+                                                className={`w-full rounded-xl border p-3 text-left transition-all ${
+                                                    isActive
+                                                        ? "border-brand-red bg-red-50"
+                                                        : "border-slate-200 bg-white hover:bg-slate-50"
+                                                }`}
+                                            >
+                                                <p className="text-sm font-bold text-slate-800">{entry.patientName || "Unknown patient"}</p>
+                                                <p className="text-xs text-slate-600 mt-1">{formatLongDate(entry.dateKey)} at {entry.timeSlot || "N/A"}</p>
+                                                <p className="text-sm text-slate-700 mt-1 line-clamp-1">Diagnosis: {entry.diagnosis || "N/A"}</p>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            <div className="lg:col-span-7 bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-4">
+                                <h2 className="text-xl font-bold text-slate-900">Consultation details</h2>
+                                {!selectedRecord ? (
+                                    <p className="text-sm text-slate-600">Select a consultation record to view details.</p>
+                                ) : (
+                                    <div className="space-y-4 text-sm text-slate-700">
+                                        <div className="grid gap-4 md:grid-cols-2">
+                                            <section className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+                                                <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Patient Information</h3>
+                                                <p><span className="font-semibold text-slate-900">Name:</span> {selectedRecord.patientName || "N/A"}</p>
+                                                <p><span className="font-semibold text-slate-900">Patient Code:</span> {selectedRecord.patientCode || "N/A"}</p>
+                                                <p><span className="font-semibold text-slate-900">Contact:</span> {resolvedPatientContact}</p>
+                                                <p><span className="font-semibold text-slate-900">Address:</span> {resolvedPatientAddress}</p>
+                                            </section>
+
+                                            <section className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
+                                                <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Consultation Timeline</h3>
+                                                <p><span className="font-semibold text-slate-900">Started:</span> {startedAtLabel}</p>
+                                                <p><span className="font-semibold text-slate-900">Completed:</span> {completedAtLabel}</p>
+                                                <p><span className="font-semibold text-slate-900">Schedule:</span> {formatLongDate(selectedRecord.dateKey)} at {selectedRecord.timeSlot || "N/A"}</p>
+                                            </section>
+                                        </div>
+
+                                        <section className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
+                                            <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Treatment Summary</h3>
+                                            <p><span className="font-semibold text-slate-900">Diagnosis:</span> {selectedRecord.diagnosis || "N/A"}</p>
+                                            <p><span className="font-semibold text-slate-900">Medicine given:</span> {selectedRecord.medicineName || "N/A"} x {selectedRecord.medicineQuantity || 0}</p>
+                                            <p><span className="font-semibold text-slate-900">Note:</span> {selectedRecord.note || "N/A"}</p>
+                                        </section>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
         if (user?.role !== "patient") {
             return (
                 <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-2">
@@ -3367,6 +3783,12 @@ function UserDashboard() {
         if (path === "/profile") return renderProfile();
         if (path === "/manage-accounts") return renderManageAccounts();
 
+        if (path === "/patient-accounts") {
+            return <PatientAccountManagement />;
+        }
+        if (path === "/health-worker-accounts") {
+            return <HealthWorkerAccountManagement />;
+        }
         if (path === "/schedules") {
             return renderSchedules();
         }
@@ -3422,9 +3844,19 @@ function UserDashboard() {
                         </div>
                         <div className="flex flex-col items-center gap-4 rounded-2xl border border-slate-200 bg-slate-50 p-5">
                             <QRCodeSVG value={qrModalAppointment.qrValue} size={220} includeMargin />
-                            <p className="text-sm font-semibold tracking-[0.2em] text-slate-700">
-                                {qrModalAppointment.qrValue}
-                            </p>
+                            <div className="flex flex-col items-center gap-2">
+                                {(() => {
+                                    const { patientSegment, randomCode } = splitAppointmentQrValue(qrModalAppointment.qrValue);
+                                    return (
+                                        <div className="flex flex-wrap items-center justify-center gap-2 text-sm font-semibold tracking-[0.12em] text-slate-700">
+                                            <span className="rounded-full bg-white px-3 py-1 border border-slate-200">{patientSegment || "N/A"}</span>
+                                            <span className="text-slate-400">-</span>
+                                            <span className="rounded-full bg-white px-3 py-1 border border-slate-200">{randomCode || "N/A"}</span>
+                                        </div>
+                                    );
+                                })()}
+                                <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Patient ID and random code</p>
+                            </div>
                             <p className="text-sm text-slate-600 text-center">
                                 Health workers will scan this code before consultation proceeds.
                             </p>
@@ -3460,9 +3892,25 @@ function UserDashboard() {
                         {activeVisibleInboxMessage.qrValue && (
                             <div className="flex flex-col items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-5">
                                 <QRCodeSVG value={activeVisibleInboxMessage.qrValue} size={200} includeMargin />
-                                <p className="text-sm font-semibold tracking-[0.2em] text-slate-700">
-                                    {activeVisibleInboxMessage.qrValue}
-                                </p>
+                                <div className="flex flex-col items-center gap-2">
+                                    {(() => {
+                                        const { patientSegment, randomCode } = splitAppointmentQrValue(activeVisibleInboxMessage.qrValue);
+                                        return (
+                                            <div className="flex flex-wrap items-center justify-center gap-2 text-sm font-semibold tracking-[0.12em] text-slate-700">
+                                                <span className="rounded-full bg-white px-3 py-1 border border-slate-200">{patientSegment || "N/A"}</span>
+                                                <span className="text-slate-400">-</span>
+                                                <span className="rounded-full bg-white px-3 py-1 border border-slate-200">{randomCode || "N/A"}</span>
+                                            </div>
+                                        );
+                                    })()}
+                                    <p className="text-xs uppercase tracking-[0.22em] text-slate-500">Patient ID and random code</p>
+                                </div>
+                            </div>
+                        )}
+                        {activeVisibleInboxMessage.appointmentCode && (
+                            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                                <p className="text-xs uppercase tracking-[0.18em] text-slate-500">Appointment Code</p>
+                                <p className="mt-1 text-sm font-semibold text-slate-800 break-all">{activeVisibleInboxMessage.appointmentCode}</p>
                             </div>
                         )}
                     </div>

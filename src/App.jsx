@@ -54,6 +54,8 @@ function AppContent() {
         "/inbox",
         "/settings",
         "/manage-accounts",
+        "/patient-accounts",
+        "/health-worker-accounts",
       ].map((path) => (
         <Route
           key={path}

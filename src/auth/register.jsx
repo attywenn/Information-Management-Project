@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { lookupLoginIdentity, registerPatientAccount } from "../services/supabaseBackendService.js";
 
 const SECURITY_QUESTIONS = [
@@ -63,10 +63,33 @@ function Register({ setIsRegisteringState }) {
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState("");
     const [success, setSuccess] = useState("");
+    const [patientCode, setPatientCode] = useState("");
+    const [showPatientIdModal, setShowPatientIdModal] = useState(false);
+    const [timerCount, setTimerCount] = useState(10);
     const passwordStrength = evaluatePasswordStrength(password);
     const passwordRuleError = validatePasswordPolicy(password);
     const hasConfirmPassword = confirmPassword.length > 0;
     const isPasswordMatched = hasConfirmPassword && password === confirmPassword;
+
+    // Timer for patient ID modal
+    useEffect(() => {
+        if (!showPatientIdModal) return;
+
+        setTimerCount(10);
+        const timerInterval = setInterval(() => {
+            setTimerCount((prev) => {
+                if (prev <= 1) {
+                    clearInterval(timerInterval);
+                    setShowPatientIdModal(false);
+                    setIsRegisteringState(true);
+                    return 0;
+                }
+                return prev - 1;
+            });
+        }, 1000);
+
+        return () => clearInterval(timerInterval);
+    }, [showPatientIdModal, setIsRegisteringState]);
 
     const handleSubmit = async (e) => {
         e.preventDefault();
@@ -107,12 +130,18 @@ function Register({ setIsRegisteringState }) {
             });
 
             const loginLookup = await lookupLoginIdentity({ identifier: email, role: "patient", dob });
-            const patientCode = loginLookup?.patient_code || "";
-            setSuccess(
-                patientCode
-                    ? `Registration saved successfully. Your Patient ID is ${patientCode}.`
-                    : "Registration saved successfully. Please sign in to continue."
-            );
+            const patientCodeValue = loginLookup?.patient_code || "";
+            
+            if (patientCodeValue) {
+                setPatientCode(patientCodeValue);
+                setShowPatientIdModal(true);
+                setSuccess("");
+            } else {
+                setSuccess("Registration saved successfully. Please sign in to continue.");
+                setTimeout(() => setIsRegisteringState(true), 1500);
+            }
+
+            // Clear form
             setUsername("");
             setEmail("");
             setPassword("");
@@ -127,7 +156,6 @@ function Register({ setIsRegisteringState }) {
             setSecurityQuestion(SECURITY_QUESTIONS[0]);
             setSecurityAnswer("");
             setContactNumber("");
-            setTimeout(() => setIsRegisteringState(true), 1500);
         } catch (submitError) {
             setError(submitError?.message || "Unable to complete registration. Please try again.");
         } finally {
@@ -310,6 +338,53 @@ function Register({ setIsRegisteringState }) {
                     Sign in here
                 </button>
             </div>
+
+            {/* Patient ID Modal */}
+            {showPatientIdModal && (
+                <div className="fixed inset-0 bg-black/50 bg-opacity-50 z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full space-y-6 animate-in fade-in zoom-in">
+                        <div className="text-center">
+                            <div className="mx-auto w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mb-4">
+                                <svg className="w-8 h-8 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                                </svg>
+                            </div>
+                            <h2 className="text-2xl font-bold text-slate-900 mb-2">Registration Successful!</h2>
+                            <p className="text-slate-600 text-sm mb-4">
+                                Your account has been created successfully. Save your Patient ID to continue.
+                            </p>
+                        </div>
+
+                        <div className="bg-slate-50 border-2 border-brand-red rounded-xl p-4">
+                            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Your Patient ID</p>
+                            <p className="text-2xl font-bold text-brand-red font-mono text-center break-all">
+                                {patientCode}
+                            </p>
+                        </div>
+
+                        <div className="space-y-3">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    navigator.clipboard.writeText(patientCode);
+                                }}
+                                className="w-full px-4 py-2.5 bg-brand-red text-white font-semibold rounded-lg hover:bg-brand-dark transition-all active:scale-95"
+                            >
+                                Copy Patient ID
+                            </button>
+                            <p className="text-center text-xs text-slate-500">
+                                This modal will close in <span className="font-bold text-brand-red">{timerCount}</span> seconds
+                            </p>
+                        </div>
+
+                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                            <p className="text-xs text-blue-800">
+                                <span className="font-semibold">Important:</span> You can now log in with your credentials. Email confirmation is not required to access your account.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            )}
             
             {/* simple style for custom-scrollbar so it doesn't look ugly inline */}
             <style>{`
