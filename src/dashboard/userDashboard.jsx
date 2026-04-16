@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import DashboardNavigation from "../components/dashboardNavigation.jsx";
 import { useAuth } from "../context/useAuth.js";
 import { Pie, Bar } from "react-chartjs-2";
@@ -344,6 +345,7 @@ const getSettingsStorageKey = (user) => {
 
 const createDefaultSettingsDraft = (user) => ({
     avatarDataUrl: user?.avatarDataUrl || "",
+    avatarFile: null,
     surname: user?.surname || "",
     firstname: user?.firstname || "",
     middlename: user?.middlename || "",
@@ -450,6 +452,7 @@ const buildAppointmentScheduleMap = (appointments = []) => {
 
 function UserDashboard() {
     const { user, updateUser, logout } = useAuth();
+    const queryClient = useQueryClient();
     const navigate = useNavigate();
     const location = useLocation();
     const path = location.pathname;
@@ -609,30 +612,36 @@ function UserDashboard() {
         });
     }, [staffConsultationHistory, user?.role]);
 
-    // Fetch stats for admin / health workers from database
+    const shouldLoadStaffStats = user?.role === "admin" || user?.role === "health_worker";
+    const statsQuery = useQuery({
+        queryKey: ["dashboard-stats", user?.role],
+        queryFn: fetchPatientAndHealthWorkerStats,
+        enabled: Boolean(shouldLoadStaffStats),
+        staleTime: 60_000,
+    });
+
     useEffect(() => {
-        if (!user?.role || (user.role !== "admin" && user.role !== "health_worker")) {
+        if (!shouldLoadStaffStats) {
             setStats({ patientCount: 0, healthWorkerCount: 0 });
             setStatsLoading(false);
             setStatsError("");
             return;
         }
 
-        setStatsLoading(true);
-        setStatsError("");
+        setStatsLoading(statsQuery.isLoading || statsQuery.isFetching);
+        setStatsError(statsQuery.error?.message || "");
+        if (statsQuery.data) {
+            setStats(statsQuery.data);
+        }
+    }, [shouldLoadStaffStats, statsQuery.data, statsQuery.error, statsQuery.isFetching, statsQuery.isLoading]);
 
-        fetchPatientAndHealthWorkerStats()
-            .then((data) => {
-                setStats(data);
-                setStatsLoading(false);
-            })
-            .catch((error) => {
-                setStatsError(error?.message || "Unable to load statistics.");
-                setStatsLoading(false);
-            });
-    }, [user?.role]);
+    const profileQuery = useQuery({
+        queryKey: ["my-profile-bundle", user?.id],
+        queryFn: getMyProfileBundle,
+        enabled: Boolean(path === "/profile" && user),
+        staleTime: 30_000,
+    });
 
-    // Fetch profile data from Supabase when visiting profile tab
     useEffect(() => {
         if (path !== "/profile" || !user) {
             setProfile(null);
@@ -641,34 +650,29 @@ function UserDashboard() {
             return;
         }
 
-        setProfileLoading(true);
-        setProfileError("");
+        setProfileLoading(profileQuery.isLoading || profileQuery.isFetching);
+        setProfileError(profileQuery.error?.message || "");
 
-        getMyProfileBundle()
-            .then((bundle) => {
-                setProfile({
-                    username: bundle.username || "",
-                    surname: bundle.surname || "",
-                    firstname: bundle.firstname || "",
-                    middlename: bundle.middlename || "",
-                    dob: bundle.dob || "",
-                    age: calculateAge(bundle.dob),
-                    address: buildAddressLine(bundle),
-                    email: bundle.email || "",
-                    contactNumber: bundle.contactNumber || "",
-                    role: bundle.role || "",
-                    profileImageUrl: bundle.avatarUrl || "",
-                    patientCode: bundle.patientCode || "",
-                    workerId: bundle.workerId || "",
-                    adminId: bundle.adminId || "",
-                });
-                setProfileLoading(false);
-            })
-            .catch((error) => {
-                setProfileError(error?.message || "Unable to load profile information.");
-                setProfileLoading(false);
+        if (profileQuery.data) {
+            const bundle = profileQuery.data;
+            setProfile({
+                username: bundle.username || "",
+                surname: bundle.surname || "",
+                firstname: bundle.firstname || "",
+                middlename: bundle.middlename || "",
+                dob: bundle.dob || "",
+                age: calculateAge(bundle.dob),
+                address: buildAddressLine(bundle),
+                email: bundle.email || "",
+                contactNumber: bundle.contactNumber || "",
+                role: bundle.role || "",
+                profileImageUrl: bundle.avatarUrl || "",
+                patientCode: bundle.patientCode || "",
+                workerId: bundle.workerId || "",
+                adminId: bundle.adminId || "",
             });
-    }, [path, user]);
+        }
+    }, [path, profileQuery.data, profileQuery.error, profileQuery.isFetching, profileQuery.isLoading, user]);
 
     const pieData = useMemo(() => {
         return {
@@ -838,6 +842,32 @@ function UserDashboard() {
         window.localStorage.setItem(STORAGE_KEYS.inboxMessages, JSON.stringify(inboxMessages));
     }, [inboxMessages]);
 
+    const dashboardCollectionsQuery = useQuery({
+        queryKey: ["dashboard-collections", user?.role],
+        enabled: Boolean(user?.role),
+        staleTime: 20_000,
+        refetchInterval: 30_000,
+        queryFn: async () => {
+            const [appointmentRows, consultationRows, inboxRows, inventoryRows, patientRows] = await Promise.all([
+                fetchAppointmentFeed({ page: 1, pageSize: 100 }),
+                fetchConsultationFeed({ page: 1, pageSize: 100 }),
+                user?.role === "patient" ? fetchMyInboxMessages() : Promise.resolve([]),
+                user?.role === "patient" ? Promise.resolve([]) : fetchInventoryItems(),
+                user?.role === "admin" || user?.role === "health_worker"
+                    ? fetchPatientDirectory({ page: 1, pageSize: 100 })
+                    : Promise.resolve([]),
+            ]);
+
+            return {
+                appointmentRows: appointmentRows || [],
+                consultationRows: consultationRows || [],
+                inboxRows: inboxRows || [],
+                inventoryRows: inventoryRows || [],
+                patientRows: patientRows || [],
+            };
+        },
+    });
+
     useEffect(() => {
         if (!user?.role) {
             setAppointments([]);
@@ -848,44 +878,23 @@ function UserDashboard() {
             return;
         }
 
-        let alive = true;
+        if (dashboardCollectionsQuery.error) {
+            setScheduleError(dashboardCollectionsQuery.error?.message || "Unable to load dashboard data.");
+            return;
+        }
 
-        const loadDashboardCollections = async () => {
-            try {
-                const [appointmentRows, consultationRows, inboxRows, inventoryRows, patientRows] = await Promise.all([
-                    fetchAppointmentFeed(),
-                    fetchConsultationFeed(),
-                    fetchMyInboxMessages(),
-                    user.role === "patient" ? Promise.resolve([]) : fetchInventoryItems(),
-                    user.role === "admin" || user.role === "health_worker" ? fetchPatientDirectory() : Promise.resolve([]),
-                ]);
+        if (!dashboardCollectionsQuery.data) {
+            return;
+        }
 
-                if (!alive) {
-                    return;
-                }
-
-                setAppointments(appointmentRows || []);
-                setConsultations(consultationRows || []);
-                setInboxMessages(inboxRows || []);
-                setInventoryItems(inventoryRows || []);
-                setPatientDirectory(patientRows || []);
-            } catch (loadError) {
-                if (!alive) {
-                    return;
-                }
-
-                setScheduleError(loadError?.message || "Unable to load dashboard data.");
-            }
-        };
-
-        loadDashboardCollections();
-        const refreshTimer = window.setInterval(loadDashboardCollections, 30000);
-
-        return () => {
-            alive = false;
-            window.clearInterval(refreshTimer);
-        };
-    }, [user?.role]);
+        const { appointmentRows, consultationRows, inboxRows, inventoryRows, patientRows } = dashboardCollectionsQuery.data;
+        setAppointments(appointmentRows);
+        setConsultations(consultationRows);
+        setInboxMessages(inboxRows);
+        setInventoryItems(inventoryRows);
+        setPatientDirectory(patientRows);
+        setScheduleError("");
+    }, [dashboardCollectionsQuery.data, dashboardCollectionsQuery.error, user?.role]);
 
     useEffect(() => {
         const timer = setInterval(() => {
@@ -896,48 +905,51 @@ function UserDashboard() {
         };
     }, []);
 
-    useEffect(() => {
-        if (user?.role !== "admin") return;
-
-        let alive = true;
-        fetchHealthWorkerDirectory()
-            .then((workers) => {
-                if (alive) {
-                    setManageError("");
-                    setCreatedHealthWorkers(workers);
-                }
-            })
-            .catch((loadError) => {
-                if (alive) {
-                    setManageError(loadError?.message || "Unable to load health worker accounts.");
-                }
-            });
-
-        return () => {
-            alive = false;
-        };
-    }, [user?.role]);
+    const adminWorkersQuery = useQuery({
+        queryKey: ["admin-health-workers"],
+        queryFn: () => fetchHealthWorkerDirectory({ page: 1, pageSize: 100 }),
+        enabled: user?.role === "admin",
+        staleTime: 30_000,
+    });
 
     useEffect(() => {
-        if (user?.role !== "admin") return;
+        if (user?.role !== "admin") {
+            return;
+        }
 
-        let alive = true;
-        fetchMyInboxMessages()
-            .then((messages) => {
-                if (alive) {
-                    setAdminInboxMessages(messages);
-                }
-            })
-            .catch(() => {
-                if (alive) {
-                    setAdminInboxMessages([]);
-                }
-            });
+        if (adminWorkersQuery.error) {
+            setManageError(adminWorkersQuery.error?.message || "Unable to load health worker accounts.");
+            return;
+        }
 
-        return () => {
-            alive = false;
-        };
-    }, [user?.role]);
+        if (adminWorkersQuery.data) {
+            setManageError("");
+            setCreatedHealthWorkers(adminWorkersQuery.data);
+        }
+    }, [adminWorkersQuery.data, adminWorkersQuery.error, user?.role]);
+
+    const adminInboxQuery = useQuery({
+        queryKey: ["admin-inbox"],
+        queryFn: fetchMyInboxMessages,
+        enabled: user?.role === "admin",
+        staleTime: 20_000,
+        refetchInterval: 30_000,
+    });
+
+    useEffect(() => {
+        if (user?.role !== "admin") {
+            return;
+        }
+
+        if (adminInboxQuery.error) {
+            setAdminInboxMessages([]);
+            return;
+        }
+
+        if (adminInboxQuery.data) {
+            setAdminInboxMessages(adminInboxQuery.data);
+        }
+    }, [adminInboxQuery.data, adminInboxQuery.error, user?.role]);
 
     const stopQrScanner = () => {
         if (scannerIntervalRef.current) {
@@ -1119,6 +1131,7 @@ function UserDashboard() {
             await deleteHealthWorkerAccountByAdmin({ userId: account.userId });
 
             setCreatedHealthWorkers((prev) => prev.filter((worker) => worker.userId !== account.userId));
+            await queryClient.invalidateQueries({ queryKey: ["admin-health-workers"] });
             setManageMessage("Health worker account deleted successfully.");
         } catch (deleteError) {
             setManageError(deleteError?.message || "Unable to delete health worker account.");
@@ -1687,10 +1700,14 @@ function UserDashboard() {
 
         const handleAvatarChange = (file) => {
             if (!file) {
-                setSettingsDraft((previous) => ({ ...previous, avatarDataUrl: "" }));
+                setSettingsDraft((previous) => ({ ...previous, avatarDataUrl: "", avatarFile: null }));
                 return;
             }
 
+            // Store the file for upload
+            setSettingsDraft((previous) => ({ ...previous, avatarFile: file }));
+
+            // Create a preview
             const reader = new FileReader();
             reader.onload = () => {
                 setSettingsDraft((previous) => ({
@@ -1719,7 +1736,8 @@ function UserDashboard() {
                     pinCode: settingsDraft.pinCode,
                     adminId: settingsDraft.adminId,
                     licenseId: settingsDraft.licenseId,
-                    avatarDataUrl: settingsDraft.avatarDataUrl,
+                    avatarFile: settingsDraft.avatarFile || null,
+                    avatarUrl: settingsDraft.avatarDataUrl,
                 });
 
                 updateUser({
@@ -1739,12 +1757,17 @@ function UserDashboard() {
                     adminId: bundle.adminId || settingsDraft.adminId,
                     systemLicenseNumber: bundle.systemLicenseNumber || settingsDraft.licenseId,
                     workerId: bundle.workerId || settingsDraft.licenseId,
-                    avatarDataUrl: bundle.avatarDataUrl || settingsDraft.avatarDataUrl,
+                    avatarDataUrl: bundle.avatarUrl || settingsDraft.avatarDataUrl,
                 });
                 window.localStorage.setItem(storageKey, JSON.stringify(settingsDraft));
+                
+                // Invalidate profile-related queries to ensure fresh data with updated address
+                await queryClient.invalidateQueries({ queryKey: ["my-profile-bundle"] });
+                await queryClient.invalidateQueries({ queryKey: ["dashboard-collections"] });
+                
                 setSettingsMessage("Settings saved successfully.");
-            } catch {
-                setSettingsError("Unable to save settings.");
+            } catch (error) {
+                setSettingsError(error?.message || "Unable to save settings.");
             }
         };
 
@@ -1785,8 +1808,7 @@ function UserDashboard() {
                 });
 
                 if (isAdmin) {
-                    const latestMessages = await fetchMyInboxMessages();
-                    setAdminInboxMessages(latestMessages);
+                    await queryClient.invalidateQueries({ queryKey: ["admin-inbox"] });
                 }
 
                 setPasswordForm({
@@ -3402,8 +3424,7 @@ function UserDashboard() {
         const isAdmin = user?.role === "admin";
 
         const refreshInventory = async () => {
-            const latestInventory = await fetchInventoryItems();
-            setInventoryItems(latestInventory);
+            await queryClient.invalidateQueries({ queryKey: ["dashboard-collections", user?.role] });
         };
 
         const addInventoryItem = async (e) => {

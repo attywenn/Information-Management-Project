@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   fetchPatientDirectory,
   fetchPatientAccountDetail,
@@ -8,11 +9,8 @@ import {
 } from "../services/supabaseBackendService";
 
 export default function PatientAccountManagement() {
-  const [patients, setPatients] = useState([]);
+  const queryClient = useQueryClient();
   const [selectedPatient, setSelectedPatient] = useState(null);
-  const [patientDetail, setPatientDetail] = useState(null);
-  const [auditLogs, setAuditLogs] = useState([]);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -42,23 +40,60 @@ export default function PatientAccountManagement() {
     return parts.filter(p => p).join(", ");
   };
 
-  // Fetch patients on mount
-  useEffect(() => {
-    loadPatients();
-  }, []);
-
-  const loadPatients = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const data = await fetchPatientDirectory();
-      setPatients(data);
-    } catch (err) {
-      setError(err.message || "Failed to load patients.");
-    } finally {
-      setLoading(false);
-    }
+  const getAvatarUrl = (item) => {
+    // Support both avatar_url from profiles and direct avatarDataUrl
+    return item?.avatar_url || item?.avatarDataUrl || "";
   };
+
+  const renderAvatar = (url, name, size = "h-8 w-8") => {
+    const avatarUrl = getAvatarUrl({ avatar_url: url });
+    return (
+      <div className={`${size} rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0 overflow-hidden`}>
+        {avatarUrl ? (
+          <img src={avatarUrl} alt={name} className="h-full w-full object-cover" />
+        ) : (
+          <span className="text-xs font-semibold text-gray-600">
+            {(name || "?").charAt(0).toUpperCase()}
+          </span>
+        )}
+      </div>
+    );
+  };
+
+  const selectedPatientUserId = getAccountUserId(selectedPatient);
+
+  const {
+    data: patients = [],
+    isLoading: patientsLoading,
+    error: patientsError,
+    refetch: refetchPatients,
+  } = useQuery({
+    queryKey: ["patient-directory", 1, 50],
+    queryFn: () => fetchPatientDirectory({ page: 1, pageSize: 50 }),
+    staleTime: 60_000,
+  });
+
+  const {
+    data: patientDetail,
+    isLoading: patientDetailLoading,
+    error: patientDetailError,
+  } = useQuery({
+    queryKey: ["patient-account-detail", selectedPatientUserId],
+    queryFn: () => fetchPatientAccountDetail(selectedPatientUserId, { page: 1, pageSize: 25 }),
+    enabled: Boolean(selectedPatientUserId),
+    staleTime: 30_000,
+  });
+
+  const {
+    data: auditLogs = [],
+    isLoading: auditLogsLoading,
+    error: auditLogsError,
+  } = useQuery({
+    queryKey: ["patient-audit-logs", selectedPatientUserId],
+    queryFn: () => fetchPatientAuditLogs(selectedPatientUserId, { page: 1, pageSize: 50 }),
+    enabled: Boolean(selectedPatientUserId),
+    staleTime: 30_000,
+  });
 
   const handleSelectPatient = async (patient) => {
     try {
@@ -67,22 +102,10 @@ export default function PatientAccountManagement() {
         throw new Error("Selected patient is missing a user identifier.");
       }
 
-      setLoading(true);
       setError(null);
       setSelectedPatient(patient);
-
-      // Fetch patient details and audit logs
-      const [detailData, logsData] = await Promise.all([
-        fetchPatientAccountDetail(patientUserId),
-        fetchPatientAuditLogs(patientUserId),
-      ]);
-
-      setPatientDetail(detailData);
-      setAuditLogs(logsData);
     } catch (err) {
       setError(err.message || "Failed to load patient details.");
-    } finally {
-      setLoading(false);
     }
   };
 
@@ -145,16 +168,24 @@ export default function PatientAccountManagement() {
       setShowDeleteModal(false);
       setDeleteReason("");
       setSelectedPatient(null);
-      setPatientDetail(null);
-      setAuditLogs([]);
       alert("Patient account deleted successfully.");
-      loadPatients();
+      queryClient.removeQueries({ queryKey: ["patient-account-detail"] });
+      queryClient.removeQueries({ queryKey: ["patient-audit-logs"] });
+      refetchPatients();
     } catch (err) {
       setDeleteError(err.message || "Failed to delete patient.");
     } finally {
       setDeleteLoading(false);
     }
   };
+
+  const loading = patientsLoading || patientDetailLoading || auditLogsLoading;
+  const effectiveError =
+    error ||
+    patientsError?.message ||
+    patientDetailError?.message ||
+    auditLogsError?.message ||
+    null;
 
   // Filter patients based on search term
   const filteredPatients = patients.filter((patient) => {
@@ -184,7 +215,7 @@ export default function PatientAccountManagement() {
               className="w-full px-3 py-2 border border-gray-300 rounded mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
 
-            {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded mb-4 text-sm">{error}</div>}
+            {effectiveError && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded mb-4 text-sm">{effectiveError}</div>}
 
             {loading ? (
               <div className="flex justify-center py-8">
@@ -199,16 +230,19 @@ export default function PatientAccountManagement() {
                     <button
                       key={getAccountUserId(patient)}
                       onClick={() => handleSelectPatient(patient)}
-                      className={`w-full text-left px-3 py-2 rounded transition ${
+                      className={`w-full text-left px-3 py-2 rounded transition flex items-center gap-3 ${
                         getAccountUserId(selectedPatient) === getAccountUserId(patient)
                           ? "bg-blue-500 text-white"
                           : "bg-gray-100 hover:bg-gray-200"
                       }`}
                     >
-                      <div className="font-medium text-sm">
-                        {formatPatientName(patient)}
+                      {renderAvatar(patient.avatarDataUrl, formatPatientName(patient), "h-10 w-10")}
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-sm truncate">
+                          {formatPatientName(patient)}
+                        </div>
+                        <div className="text-xs opacity-75 truncate">{patient.email || patient.phone || "N/A"}</div>
                       </div>
-                      <div className="text-xs opacity-75">{patient.phone}</div>
                     </button>
                   ))
                 )}
@@ -223,7 +257,16 @@ export default function PatientAccountManagement() {
             <div className="space-y-6">
               {/* Account Info */}
               <div className="bg-white rounded-lg shadow p-6">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4">Account Information</h3>
+                <div className="flex items-start gap-6 mb-6">
+                  {renderAvatar(patientDetail?.profile?.avatar_url || patientDetail?.profile?.avatarDataUrl, formatPatientName(patientDetail?.profile), "h-24 w-24")}
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-800 mb-1">Account Information</h3>
+                    <p className="text-sm text-gray-600">
+                      {patientDetail?.profile?.surname}, {patientDetail?.profile?.firstname}
+                      {patientDetail?.profile?.middlename && ` ${patientDetail?.profile?.middlename}`}
+                    </p>
+                  </div>
+                </div>
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>

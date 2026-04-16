@@ -63,6 +63,141 @@ const normalizeDobValue = (value) => {
   return parsed.toISOString().slice(0, 10);
 };
 
+const DEFAULT_PAGE_SIZE = 25;
+const MAX_PAGE_SIZE = 100;
+
+const normalizePagination = ({ page = 1, pageSize = DEFAULT_PAGE_SIZE } = {}) => {
+  const safePage = Math.max(1, Number(page) || 1);
+  const safePageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, Number(pageSize) || DEFAULT_PAGE_SIZE));
+  const from = (safePage - 1) * safePageSize;
+  const to = from + safePageSize - 1;
+  return { page: safePage, pageSize: safePageSize, from, to };
+};
+
+const AVATAR_BUCKET = "avatars";
+const AVATAR_MAX_SIZE = 5 * 1024 * 1024; // 5MB
+const AVATAR_ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp"];
+
+export async function uploadProfilePicture(file) {
+  if (!file) {
+    throw new Error("File is required.");
+  }
+
+  if (file.size > AVATAR_MAX_SIZE) {
+    throw new Error(`Image must be smaller than 5MB. Current size: ${(file.size / 1024 / 1024).toFixed(2)}MB`);
+  }
+
+  if (!AVATAR_ALLOWED_TYPES.includes(file.type)) {
+    throw new Error("Only JPEG, PNG, and WebP images are allowed.");
+  }
+
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+  if (userError || !userData.user?.id) {
+    throw new Error("Authentication required for avatar upload.");
+  }
+
+  // Ensure avatars bucket exists before uploading - do this for all roles
+  try {
+    const response = await supabase.functions.invoke("ensure-avatars-bucket", {
+      method: "POST",
+    });
+    
+    if (!response.data?.success) {
+      console.warn("Warning: Bucket creation may have failed, attempting upload anyway");
+    }
+  } catch (bucketError) {
+    console.warn("Warning: Could not ensure avatars bucket exists, attempting upload anyway:", bucketError);
+  }
+
+  const userId = userData.user.id;
+  const fileExt = file.name.split(".").pop().toLowerCase();
+  const fileName = `${userId}/avatar-${Date.now()}.${fileExt}`;
+
+  // Delete old avatar if it exists
+  try {
+    const { data: listData } = await supabase.storage
+      .from(AVATAR_BUCKET)
+      .list(userId);
+
+    if (listData && listData.length > 0) {
+      const oldFiles = listData.map((f) => `${userId}/${f.name}`);
+      await supabase.storage
+        .from(AVATAR_BUCKET)
+        .remove(oldFiles);
+    }
+  } catch {
+    // If cleanup fails, continue with upload
+  }
+
+  // Upload new avatar
+  const { data, error } = await supabase.storage
+    .from(AVATAR_BUCKET)
+    .upload(fileName, file, {
+      cacheControl: "3600",
+      upsert: false,
+    });
+
+  if (error) {
+    // If bucket not found, provide helpful error message
+    if (error.message?.includes("Bucket not found") || error.message?.includes("bucket") && error.message?.includes("not")) {
+      throw new Error(
+        "Avatar storage bucket is not initialized. Please try uploading again - it will be set up automatically on retry."
+      );
+    }
+    throw toBackendError(error, "Failed to upload profile picture.");
+  }
+
+  // Get public URL
+  const { data: urlData } = supabase.storage
+    .from(AVATAR_BUCKET)
+    .getPublicUrl(fileName);
+
+  return {
+    path: data.path,
+    url: urlData.publicUrl,
+  };
+}
+
+export async function deleteProfilePicture() {
+  const { data: userData, error: userError } = await supabase.auth.getUser();
+  if (userError || !userData.user?.id) {
+    throw new Error("Authentication required.");
+  }
+
+  const userId = userData.user.id;
+
+  try {
+    const { data: listData } = await supabase.storage
+      .from(AVATAR_BUCKET)
+      .list(userId);
+
+    if (listData && listData.length > 0) {
+      const files = listData.map((f) => `${userId}/${f.name}`);
+      const { error } = await supabase.storage
+        .from(AVATAR_BUCKET)
+        .remove(files);
+
+      if (error) {
+        throw error;
+      }
+    }
+  } catch (error) {
+    throw toBackendError(error, "Failed to delete profile picture.");
+  }
+
+  // Update profile to clear avatar_url
+  const { error: updateError } = await supabase
+    .from("profiles")
+    .update({ avatar_url: null, updated_at: new Date().toISOString() })
+    .eq("id", userId);
+
+  if (updateError) {
+    throw toBackendError(updateError, "Failed to update profile.");
+  }
+
+  return { success: true };
+}
+
 export async function registerPatientAccount(payload) {
   const metadata = {
     app_role: "patient",
@@ -438,11 +573,14 @@ export async function completeConsultationRecord(payload) {
   return data;
 }
 
-export async function fetchHealthWorkerDirectory() {
+export async function fetchHealthWorkerDirectory(options = {}) {
+  const { from, to } = normalizePagination(options);
+
   const { data, error } = await supabase
     .from("health_worker_profiles")
     .select("user_id, license_number, surname, firstname, middlename, dob, created_at")
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .range(from, to);
 
   if (error) {
     throw toBackendError(error, "Unable to load health worker accounts.");
@@ -609,22 +747,37 @@ const buildPersonName = ({ display_name: displayName, firstname, surname, userna
   return username || "";
 };
 
-export async function fetchPatientDirectory() {
-  const [{ data: patientRows, error: patientError }, { data: profileRows, error: profileError }, { data: addressRows, error: addressError }] = await Promise.all([
-    supabase
-      .from("patient_profiles")
-      .select("user_id, patient_code, surname, firstname, middlename, dob, contact_number, address_id, created_at, updated_at"),
-    supabase
-      .from("profiles")
-      .select("id, username, email, display_name, avatar_url, created_at, updated_at"),
-    supabase
-      .from("addresses")
-      .select("id, region, province, city, barangay, house_number, street, purok_subdivision"),
-  ]);
+export async function fetchPatientDirectory(options = {}) {
+  const { from, to } = normalizePagination(options);
+
+  const { data: patientRows, error: patientError } = await supabase
+    .from("patient_profiles")
+    .select("user_id, patient_code, surname, firstname, middlename, dob, contact_number, address_id, created_at, updated_at")
+    .order("created_at", { ascending: false })
+    .range(from, to);
 
   if (patientError) {
     throw toBackendError(patientError, "Unable to load patient directory.");
   }
+
+  const userIds = (patientRows || []).map((row) => row.user_id).filter(Boolean);
+  const addressIds = (patientRows || []).map((row) => row.address_id).filter(Boolean);
+
+  const [{ data: profileRows, error: profileError }, { data: addressRows, error: addressError }] = await Promise.all([
+    userIds.length
+      ? supabase
+          .from("profiles")
+          .select("id, username, email, display_name, avatar_url, created_at, updated_at")
+          .in("id", userIds)
+      : Promise.resolve({ data: [], error: null }),
+    addressIds.length
+      ? supabase
+          .from("addresses")
+          .select("id, region, province, city, barangay, house_number, street, purok_subdivision")
+          .in("id", addressIds)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+
   if (profileError) {
     throw toBackendError(profileError, "Unable to load patient directory.");
   }
@@ -677,27 +830,44 @@ export async function fetchPatientDirectory() {
   });
 }
 
-export async function fetchAppointmentFeed() {
-  const [{ data: appointmentRows, error: appointmentError }, { data: patientRows, error: patientError }, { data: profileRows, error: profileError }, { data: symptomRows, error: symptomError }, { data: symptomMetaRows, error: symptomMetaError }] = await Promise.all([
-    supabase
-      .from("appointments")
-      .select("id, patient_user_id, booked_by_user_id, scheduled_date, time_slot, status, qr_value, other_symptom_text, created_at, updated_at")
-      .order("created_at", { ascending: false }),
-    supabase
-      .from("patient_profiles")
-      .select("user_id, patient_code, surname, firstname, middlename, dob, contact_number, address_id, created_at, updated_at"),
-    supabase
-      .from("profiles")
-      .select("id, username, email, display_name, avatar_url, created_at, updated_at"),
-    supabase
-      .from("appointment_symptoms")
-      .select("appointment_id, symptom_id"),
+export async function fetchAppointmentFeed(options = {}) {
+  const { from, to } = normalizePagination(options);
+
+  const { data: appointmentRows, error: appointmentError } = await supabase
+    .from("appointments")
+    .select("id, patient_user_id, booked_by_user_id, scheduled_date, time_slot, status, qr_value, other_symptom_text, created_at, updated_at")
+    .order("created_at", { ascending: false })
+    .range(from, to);
+
+  if (appointmentError) throw toBackendError(appointmentError, "Unable to load appointments.");
+
+  const patientIds = Array.from(new Set((appointmentRows || []).map((row) => row.patient_user_id).filter(Boolean)));
+  const appointmentIds = (appointmentRows || []).map((row) => row.id).filter(Boolean);
+
+  const [{ data: patientRows, error: patientError }, { data: profileRows, error: profileError }, { data: symptomRows, error: symptomError }, { data: symptomMetaRows, error: symptomMetaError }] = await Promise.all([
+    patientIds.length
+      ? supabase
+          .from("patient_profiles")
+          .select("user_id, patient_code, surname, firstname, middlename")
+          .in("user_id", patientIds)
+      : Promise.resolve({ data: [], error: null }),
+    patientIds.length
+      ? supabase
+          .from("profiles")
+          .select("id, username, display_name")
+          .in("id", patientIds)
+      : Promise.resolve({ data: [], error: null }),
+    appointmentIds.length
+      ? supabase
+          .from("appointment_symptoms")
+          .select("appointment_id, symptom_id")
+          .in("appointment_id", appointmentIds)
+      : Promise.resolve({ data: [], error: null }),
     supabase
       .from("symptoms")
       .select("id, name"),
   ]);
 
-  if (appointmentError) throw toBackendError(appointmentError, "Unable to load appointments.");
   if (patientError) throw toBackendError(patientError, "Unable to load appointments.");
   if (profileError) throw toBackendError(profileError, "Unable to load appointments.");
   if (symptomError) throw toBackendError(symptomError, "Unable to load appointments.");
@@ -744,33 +914,58 @@ export async function fetchAppointmentFeed() {
   });
 }
 
-export async function fetchConsultationFeed() {
-  const [{ data: consultationRows, error: consultationError }, { data: appointmentRows, error: appointmentError }, { data: patientRows, error: patientError }, { data: profileRows, error: profileError }, { data: itemRows, error: itemError }, { data: inventoryRows, error: inventoryError }, { data: workerRows, error: workerError }] = await Promise.all([
-    supabase
-      .from("consultations")
-      .select("id, appointment_id, patient_user_id, health_worker_user_id, diagnosis, note, started_at, completed_at, duration_seconds, proof_image_url, created_at")
-      .order("created_at", { ascending: false }),
-    supabase
-      .from("appointments")
-      .select("id, patient_user_id, scheduled_date, time_slot, qr_value, status, created_at, updated_at"),
-    supabase
-      .from("patient_profiles")
-      .select("user_id, patient_code, surname, firstname, middlename, dob, contact_number, address_id"),
-    supabase
-      .from("profiles")
-      .select("id, username, email, display_name, avatar_url"),
-    supabase
-      .from("consultation_items")
-      .select("consultation_id, item_id, quantity, medicine_intake_per_day, medicine_intake_instruction, medicine_intake_frequency, medicine_intake_more_than_3x_note"),
+export async function fetchConsultationFeed(options = {}) {
+  const { from, to } = normalizePagination(options);
+
+  const { data: consultationRows, error: consultationError } = await supabase
+    .from("consultations")
+    .select("id, appointment_id, patient_user_id, health_worker_user_id, diagnosis, note, started_at, completed_at, duration_seconds, proof_image_url, created_at")
+    .order("created_at", { ascending: false })
+    .range(from, to);
+
+  if (consultationError) throw toBackendError(consultationError, "Unable to load consultations.");
+
+  const appointmentIds = Array.from(new Set((consultationRows || []).map((row) => row.appointment_id).filter(Boolean)));
+  const patientIds = Array.from(new Set((consultationRows || []).map((row) => row.patient_user_id).filter(Boolean)));
+  const workerIds = Array.from(new Set((consultationRows || []).map((row) => row.health_worker_user_id).filter(Boolean)));
+  const consultationIds = (consultationRows || []).map((row) => row.id).filter(Boolean);
+
+  const [{ data: appointmentRows, error: appointmentError }, { data: patientRows, error: patientError }, { data: profileRows, error: profileError }, { data: itemRows, error: itemError }, { data: inventoryRows, error: inventoryError }, { data: workerRows, error: workerError }] = await Promise.all([
+    appointmentIds.length
+      ? supabase
+          .from("appointments")
+          .select("id, scheduled_date, time_slot")
+          .in("id", appointmentIds)
+      : Promise.resolve({ data: [], error: null }),
+    patientIds.length
+      ? supabase
+          .from("patient_profiles")
+          .select("user_id, patient_code, surname, firstname")
+          .in("user_id", patientIds)
+      : Promise.resolve({ data: [], error: null }),
+    patientIds.length
+      ? supabase
+          .from("profiles")
+          .select("id, username, display_name")
+          .in("id", patientIds)
+      : Promise.resolve({ data: [], error: null }),
+    consultationIds.length
+      ? supabase
+          .from("consultation_items")
+          .select("consultation_id, item_id, quantity, medicine_intake_per_day, medicine_intake_instruction, medicine_intake_frequency, medicine_intake_more_than_3x_note")
+          .in("consultation_id", consultationIds)
+      : Promise.resolve({ data: [], error: null }),
     supabase
       .from("inventory_items")
       .select("id, name, category, unit"),
-    supabase
-      .from("health_worker_profiles")
-      .select("user_id, license_number, surname, firstname, middlename"),
+    workerIds.length
+      ? supabase
+          .from("health_worker_profiles")
+          .select("user_id, license_number, surname, firstname, middlename")
+          .in("user_id", workerIds)
+      : Promise.resolve({ data: [], error: null }),
   ]);
 
-  if (consultationError) throw toBackendError(consultationError, "Unable to load consultations.");
   if (appointmentError) throw toBackendError(appointmentError, "Unable to load consultations.");
   if (patientError) throw toBackendError(patientError, "Unable to load consultations.");
   if (profileError) throw toBackendError(profileError, "Unable to load consultations.");
@@ -836,22 +1031,33 @@ export async function fetchConsultationFeed() {
   });
 }
 
-export async function updateMyProfileSettings(payload) {
+export async function updateMyProfileSettingsWithAvatar(payload) {
   const { data: userData, error: userError } = await supabase.auth.getUser();
   if (userError || !userData.user?.id) {
     throw new Error("Authenticated user session was not found.");
   }
 
-  const profileBundle = await getMyProfileBundle();
   const userId = userData.user.id;
   const now = new Date().toISOString();
+  let avatarUrl = null;
+
+  // Handle file upload if provided
+  if (payload.avatarFile instanceof File) {
+    const uploadResult = await uploadProfilePicture(payload.avatarFile);
+    avatarUrl = uploadResult.url;
+  } else if (payload.avatarUrl) {
+    // Use provided URL directly (backward compatibility)
+    avatarUrl = payload.avatarUrl;
+  }
+
+  const profileBundle = await getMyProfileBundle();
   const displayName = `${payload.firstname || ""} ${payload.surname || ""}`.trim() || profileBundle.displayName || profileBundle.username;
 
   const { error: profileError } = await supabase
     .from("profiles")
     .update({
       display_name: displayName,
-      avatar_url: payload.avatarDataUrl || null,
+      avatar_url: avatarUrl,
       updated_at: now,
     })
     .eq("id", userId);
@@ -949,14 +1155,19 @@ export async function updateMyProfileSettings(payload) {
   return getMyProfileBundle();
 }
 
+// Backward compatibility alias
+export const updateMyProfileSettings = updateMyProfileSettingsWithAvatar;
+
 // ========== ADMIN: PATIENT ACCOUNT MANAGEMENT ==========
 
-export async function fetchPatientAccountDetail(patientUserId) {
+export async function fetchPatientAccountDetail(patientUserId, options = {}) {
   try {
+    const { from, to } = normalizePagination(options);
+
     // Get patient profile
     const { data: patientProfile, error: patientError } = await supabase
       .from("patient_profiles")
-      .select("*")
+      .select("user_id, patient_code, surname, firstname, middlename, dob, contact_number, address_id, created_at, updated_at")
       .eq("user_id", patientUserId)
       .single();
 
@@ -977,9 +1188,10 @@ export async function fetchPatientAccountDetail(patientUserId) {
     // Get consultations
     const { data: consultations, error: consultError } = await supabase
       .from("consultations")
-      .select("*")
+      .select("id, patient_user_id, diagnosis, note, completed_at, duration_seconds, appointment_id")
       .eq("patient_user_id", patientUserId)
-      .order("completed_at", { ascending: false });
+      .order("completed_at", { ascending: false })
+      .range(from, to);
 
     if (consultError) {
       throw toBackendError(consultError, "Failed to fetch patient consultations.");
@@ -995,8 +1207,10 @@ export async function fetchPatientAccountDetail(patientUserId) {
   }
 }
 
-export async function fetchPatientAuditLogs(patientUserId) {
+export async function fetchPatientAuditLogs(patientUserId, options = {}) {
   try {
+    const { from, to } = normalizePagination(options);
+
     // First fetch consultations for this specific patient
     const { data: consultations, error: consultError } = await supabase
       .from("consultations")
@@ -1030,7 +1244,7 @@ export async function fetchPatientAuditLogs(patientUserId) {
       .eq("movement_type", "dispense")
       .in("consultation_id", consultationIds)
       .order("created_at", { ascending: false })
-      .limit(100);
+      .range(from, to);
 
     if (error) {
       throw toBackendError(error, "Failed to fetch medicine history.");
@@ -1042,8 +1256,10 @@ export async function fetchPatientAuditLogs(patientUserId) {
   }
 }
 
-export async function fetchMedicinesDispensedByHealthWorker(healthWorkerUserId) {
+export async function fetchMedicinesDispensedByHealthWorker(healthWorkerUserId, options = {}) {
   try {
+    const { from, to } = normalizePagination(options);
+
     // Fetch consultations completed by the health worker
     const { data: consultations, error: consultError } = await supabase
       .from("consultations")
@@ -1076,7 +1292,7 @@ export async function fetchMedicinesDispensedByHealthWorker(healthWorkerUserId) 
       .eq("movement_type", "dispense")
       .in("consultation_id", consultationIds)
       .order("created_at", { ascending: false })
-      .limit(100);
+      .range(from, to);
 
     if (error) {
       throw toBackendError(error, "Failed to fetch medicines dispensed.");
@@ -1088,8 +1304,10 @@ export async function fetchMedicinesDispensedByHealthWorker(healthWorkerUserId) 
   }
 }
 
-export async function fetchConsultationsByHealthWorker(healthWorkerUserId) {
+export async function fetchConsultationsByHealthWorker(healthWorkerUserId, options = {}) {
   try {
+    const { from, to } = normalizePagination(options);
+
     const { data: consultations, error } = await supabase
       .from("consultations")
       .select(
@@ -1104,7 +1322,7 @@ export async function fetchConsultationsByHealthWorker(healthWorkerUserId) {
       )
       .eq("health_worker_user_id", healthWorkerUserId)
       .order("completed_at", { ascending: false })
-      .limit(100);
+      .range(from, to);
 
     if (error) {
       throw toBackendError(error, "Failed to fetch consultations.");

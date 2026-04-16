@@ -9,6 +9,19 @@ import FAQs from "./pages/FAQs.jsx";
 import Header from "./components/Header.jsx";
 import Navigation from "./components/Navigation.jsx";
 import UserDashboard from "./dashboard/userDashboard.jsx";
+import { supabase } from "./utils/supabase.js";
+
+// Initialize avatars bucket on app start
+async function initializeAvatarsBucket() {
+  try {
+    await supabase.functions.invoke("ensure-avatars-bucket", {
+      method: "POST",
+    });
+    console.log("Avatars bucket initialized");
+  } catch (error) {
+    console.warn("Could not initialize avatars bucket on startup:", error);
+  }
+}
 
 function Landing() {
   return (
@@ -40,6 +53,11 @@ function AppContent() {
     document.documentElement.setAttribute("data-theme", theme);
     document.body.classList.toggle("dark-mode", theme === "dark");
   }, [user?.theme]);
+
+  // Initialize avatars bucket on app startup for all roles
+  useEffect(() => {
+    initializeAvatarsBucket();
+  }, []);
 
   return (
     <Routes>

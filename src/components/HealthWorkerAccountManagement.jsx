@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   fetchHealthWorkerDirectory,
   fetchMedicinesDispensedByHealthWorker,
@@ -6,12 +7,7 @@ import {
 } from "../services/supabaseBackendService";
 
 export default function HealthWorkerAccountManagement() {
-  const [healthWorkers, setHealthWorkers] = useState([]);
   const [selectedWorker, setSelectedWorker] = useState(null);
-  const [workerDetail, setWorkerDetail] = useState(null);
-  const [medicines, setMedicines] = useState([]);
-  const [consultations, setConsultations] = useState([]);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
 
@@ -28,23 +24,59 @@ export default function HealthWorkerAccountManagement() {
     return parts.filter(p => p).join(", ");
   };
 
-  // Fetch health workers on mount
-  useEffect(() => {
-    loadHealthWorkers();
-  }, []);
-
-  const loadHealthWorkers = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      const data = await fetchHealthWorkerDirectory();
-      setHealthWorkers(data);
-    } catch (err) {
-      setError(err.message || "Failed to load health workers.");
-    } finally {
-      setLoading(false);
-    }
+  const getAvatarUrl = (item) => {
+    // Support both avatar_url from profiles and direct avatarDataUrl
+    return item?.avatar_url || item?.avatarDataUrl || "";
   };
+
+  const renderAvatar = (url, name, size = "h-8 w-8") => {
+    const avatarUrl = getAvatarUrl({ avatar_url: url });
+    return (
+      <div className={`${size} rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0 overflow-hidden`}>
+        {avatarUrl ? (
+          <img src={avatarUrl} alt={name} className="h-full w-full object-cover" />
+        ) : (
+          <span className="text-xs font-semibold text-gray-600">
+            {(name || "?").charAt(0).toUpperCase()}
+          </span>
+        )}
+      </div>
+    );
+  };
+
+  const selectedWorkerUserId = getAccountUserId(selectedWorker);
+
+  const {
+    data: healthWorkers = [],
+    isLoading: workersLoading,
+    error: workersError,
+  } = useQuery({
+    queryKey: ["health-worker-directory", 1, 50],
+    queryFn: () => fetchHealthWorkerDirectory({ page: 1, pageSize: 50 }),
+    staleTime: 60_000,
+  });
+
+  const {
+    data: medicines = [],
+    isLoading: medicinesLoading,
+    error: medicinesError,
+  } = useQuery({
+    queryKey: ["health-worker-medicines", selectedWorkerUserId],
+    queryFn: () => fetchMedicinesDispensedByHealthWorker(selectedWorkerUserId, { page: 1, pageSize: 50 }),
+    enabled: Boolean(selectedWorkerUserId),
+    staleTime: 30_000,
+  });
+
+  const {
+    data: consultations = [],
+    isLoading: consultationsLoading,
+    error: consultationsError,
+  } = useQuery({
+    queryKey: ["health-worker-consultations", selectedWorkerUserId],
+    queryFn: () => fetchConsultationsByHealthWorker(selectedWorkerUserId, { page: 1, pageSize: 50 }),
+    enabled: Boolean(selectedWorkerUserId),
+    staleTime: 30_000,
+  });
 
   const handleSelectWorker = async (worker) => {
     try {
@@ -53,25 +85,21 @@ export default function HealthWorkerAccountManagement() {
         throw new Error("Selected health worker is missing a user identifier.");
       }
 
-      setLoading(true);
       setError(null);
       setSelectedWorker(worker);
-
-      // Fetch medicines dispensed and consultations completed by this health worker
-      const [medicinesData, consultationsData] = await Promise.all([
-        fetchMedicinesDispensedByHealthWorker(workerUserId),
-        fetchConsultationsByHealthWorker(workerUserId),
-      ]);
-
-      setWorkerDetail(worker);
-      setMedicines(medicinesData);
-      setConsultations(consultationsData);
     } catch (err) {
       setError(err.message || "Failed to load health worker details.");
-    } finally {
-      setLoading(false);
     }
   };
+
+  const loading = workersLoading || medicinesLoading || consultationsLoading;
+  const workerDetail = selectedWorker;
+  const effectiveError =
+    error ||
+    workersError?.message ||
+    medicinesError?.message ||
+    consultationsError?.message ||
+    null;
 
   // Filter health workers based on search term
   const filteredWorkers = healthWorkers.filter((worker) => {
@@ -101,7 +129,7 @@ export default function HealthWorkerAccountManagement() {
               className="w-full px-3 py-2 border border-gray-300 rounded mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
 
-            {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded mb-4 text-sm">{error}</div>}
+            {effectiveError && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded mb-4 text-sm">{effectiveError}</div>}
 
             {loading ? (
               <div className="flex justify-center py-8">
@@ -116,17 +144,21 @@ export default function HealthWorkerAccountManagement() {
                     <button
                       key={getAccountUserId(worker)}
                       onClick={() => handleSelectWorker(worker)}
-                      className={`w-full text-left px-3 py-2 rounded transition ${
+                      className={`w-full text-left px-3 py-2 rounded transition flex items-center gap-3 ${
                         getAccountUserId(selectedWorker) === getAccountUserId(worker)
                           ? "bg-green-500 text-white"
                           : "bg-gray-100 hover:bg-gray-200"
                       }`}
                     >
-                      <div className="font-medium text-sm">
-                        {formatHealthWorkerName(worker)}
+                      {renderAvatar(worker.avatarDataUrl, formatHealthWorkerName(worker), "h-10 w-10")}
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-sm truncate">
+                          {formatHealthWorkerName(worker)}
+                        </div>
+                        <div className="text-xs opacity-75 truncate">
+                          {worker.specialization || "General"} {worker.phone && `• ${worker.phone}`}
+                        </div>
                       </div>
-                      <div className="text-xs opacity-75">{worker.phone}</div>
-                      <div className="text-xs opacity-75">{worker.specialization || "General"}</div>
                     </button>
                   ))
                 )}
@@ -141,7 +173,19 @@ export default function HealthWorkerAccountManagement() {
             <div className="space-y-6">
               {/* Account Info */}
               <div className="bg-white rounded-lg shadow p-6">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4">Account Information</h3>
+                <div className="flex items-start gap-6 mb-6">
+                  {renderAvatar(workerDetail?.avatar_url || workerDetail?.avatarDataUrl, formatHealthWorkerName(workerDetail), "h-24 w-24")}
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-800 mb-1">Account Information</h3>
+                    <p className="text-sm text-gray-600">
+                      {workerDetail?.surname}, {workerDetail?.firstname}
+                      {workerDetail?.middlename && ` ${workerDetail?.middlename}`}
+                    </p>
+                    <p className="text-sm text-gray-500 mt-1">
+                      {workerDetail?.specialization || "General"}
+                    </p>
+                  </div>
+                </div>
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
