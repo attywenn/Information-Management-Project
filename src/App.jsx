@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, Outlet } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext.jsx";
 import { useAuth } from "./context/useAuth.js";
 import Homepage from "./pages/homepage.jsx";
@@ -7,7 +7,6 @@ import Account from "./pages/Account.jsx";
 import Contact from "./pages/Contact.jsx";
 import FAQs from "./pages/FAQs.jsx";
 import Header from "./components/Header.jsx";
-import Navigation from "./components/Navigation.jsx";
 import UserDashboard from "./dashboard/userDashboard.jsx";
 import { supabase } from "./utils/supabase.js";
 
@@ -23,26 +22,22 @@ async function initializeAvatarsBucket() {
   }
 }
 
-function Landing() {
+/** Layout for all public landing pages (header + main content area). */
+function LandingLayout() {
   return (
     <div className="flex flex-col min-h-screen bg-slate-50">
       <Header />
-      <Navigation />
       <main className="flex-1 w-full mx-auto max-w-6xl p-4 sm:p-6 lg:p-8">
-        <Routes>
-          <Route path="/" element={<Homepage />} />
-          <Route path="/account" element={<Account />} />
-          <Route path="/contact" element={<Contact />} />
-          <Route path="/faqs" element={<FAQs />} />
-          <Route path="*" element={<Homepage />} />
-        </Routes>
+        <Outlet />
       </main>
     </div>
   );
 }
 
-function Dashboard() {
-  return <UserDashboard />;
+/** Layout route that redirects unauthenticated users to /account. */
+function RequireAuth() {
+  const { isLoggedIn } = useAuth();
+  return isLoggedIn ? <Outlet /> : <Navigate to="/account" replace />;
 }
 
 function AppContent() {
@@ -61,32 +56,35 @@ function AppContent() {
 
   return (
     <Routes>
-      {[
-        "/dashboard",
-        "/schedules",
-        "/history",
-        "/consultation",
-        "/inventory",
-        "/faqs-dashboard",
-        "/inbox",
-        "/settings",
-        "/manage-accounts",
-        "/patient-accounts",
-        "/health-worker-accounts",
-      ].map((path) => (
-        <Route
-          key={path}
-          path={path}
-          element={
-            isLoggedIn ? (
-              <Dashboard />
-            ) : (
-              <Navigate to="/account" replace />
-            )
-          }
-        />
-      ))}
-      <Route path="*" element={isLoggedIn ? <Navigate to="/dashboard" replace /> : <Landing />} />
+      {/* Public landing pages */}
+      <Route element={<LandingLayout />}>
+        <Route path="/" element={<Homepage />} />
+        <Route path="/account" element={<Account />} />
+        <Route path="/contact" element={<Contact />} />
+        <Route path="/faqs" element={<FAQs />} />
+      </Route>
+
+      {/* Protected dashboard pages — all rendered by UserDashboard which
+          uses useLocation() internally to show the correct section. */}
+      <Route element={<RequireAuth />}>
+        <Route path="/dashboard" element={<UserDashboard />} />
+        <Route path="/schedules" element={<UserDashboard />} />
+        <Route path="/history" element={<UserDashboard />} />
+        <Route path="/consultation" element={<UserDashboard />} />
+        <Route path="/inventory" element={<UserDashboard />} />
+        <Route path="/faqs-dashboard" element={<UserDashboard />} />
+        <Route path="/inbox" element={<UserDashboard />} />
+        <Route path="/settings" element={<UserDashboard />} />
+        <Route path="/manage-accounts" element={<UserDashboard />} />
+        <Route path="/patient-accounts" element={<UserDashboard />} />
+        <Route path="/health-worker-accounts" element={<UserDashboard />} />
+      </Route>
+
+      {/* Catch-all: send logged-in users to dashboard, others to home */}
+      <Route
+        path="*"
+        element={<Navigate to={isLoggedIn ? "/dashboard" : "/"} replace />}
+      />
     </Routes>
   );
 }

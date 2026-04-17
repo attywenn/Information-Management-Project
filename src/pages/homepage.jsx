@@ -12,9 +12,9 @@ function Homepage() {
           <img
             src={homepageImage}
             alt="San Perfecto Health Center exterior"
-            className="w-full h-full object-cover opacity-40 mix-blend-overlay"
+            className="w-full h-full object-cover opacity-40"
           />
-          <div className="absolute inset-0 bg-linear-to-t from-slate-900 via-slate-900/40 to-transparent"></div>
+          <div className="absolute inset-0 bg-gradient-to-t from-slate-900 via-slate-900/40 to-transparent" />
         </div>
         
         <div className="relative px-6 py-16 sm:px-12 sm:py-24 max-w-3xl">
@@ -57,7 +57,7 @@ function Homepage() {
           },
           {
             title: "Community Program",
-            desc: "Tingnan sa inyong inbox ang mga paparating na ",
+            desc: "Tingnan sa inyong inbox ang mga paparating na programa at aktibidad ng barangay para sa kalusugan ng komunidad.",
             icon: faHouseChimneyMedical
           }
         ].map((item, i) => (
