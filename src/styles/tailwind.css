@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* Make Tailwind's dark: variant respond to data-theme="dark" instead of
+   prefers-color-scheme so that the user-controlled theme toggle works. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 @theme {
   --color-brand-red: #dc2626;      /* A more vibrant, accessible red */
   --color-brand-dark: #991b1b;     /* Refined dark red for hover states */
@@ -28,36 +32,38 @@
     color: #f1f5f9;
   }
 
+  /* Dark mode surface overrides — specificity of [attr]+class beats single
+     utility class, so !important is not needed here. */
   html[data-theme="dark"] .bg-white {
-    background-color: #0f172a !important;
+    background-color: #0f172a;
   }
 
   html[data-theme="dark"] .bg-slate-50,
   html[data-theme="dark"] .bg-slate-50\/50,
   html[data-theme="dark"] .bg-slate-50\/70 {
-    background-color: #0f172a !important;
+    background-color: #0f172a;
   }
 
   html[data-theme="dark"] .bg-slate-100 {
-    background-color: #1e293b !important;
+    background-color: #1e293b;
   }
 
   html[data-theme="dark"] .text-slate-900,
   html[data-theme="dark"] .text-slate-800,
   html[data-theme="dark"] .text-slate-700 {
-    color: #f1f5f9 !important;
+    color: #f1f5f9;
   }
 
   html[data-theme="dark"] .text-slate-600,
   html[data-theme="dark"] .text-slate-500,
   html[data-theme="dark"] .text-slate-400 {
-    color: #cbd5e1 !important;
+    color: #cbd5e1;
   }
 
   html[data-theme="dark"] .border-slate-100,
   html[data-theme="dark"] .border-slate-200,
   html[data-theme="dark"] .border-slate-300 {
-    border-color: #334155 !important;
+    border-color: #334155;
   }
 
   html[data-theme="dark"] input,
@@ -69,7 +75,7 @@
   }
 
   html[data-theme="dark"] .hover\:bg-slate-50:hover {
-    background-color: #1e293b !important;
+    background-color: #1e293b;
   }
 }
 
