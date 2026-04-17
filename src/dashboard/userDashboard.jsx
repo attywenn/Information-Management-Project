@@ -6,11 +6,13 @@ import { useAuth } from "../context/useAuth.js";
 import { Bar } from "react-chartjs-2";
 import { Chart as ChartJS, Tooltip, Legend, CategoryScale, LinearScale, BarElement } from "chart.js";
 import { QRCodeSVG } from "qrcode.react";
+import jsQR from "jsqr";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faTriangleExclamation, faCalendarDays, faFileMedical, faStethoscope, faBox } from "@fortawesome/free-solid-svg-icons";
 import PatientAccountManagement from "../components/PatientAccountManagement.jsx";
 import HealthWorkerAccountManagement from "../components/HealthWorkerAccountManagement.jsx";
 import {
+    addConsultationDispensedItem,
     bookPatientAppointment,
     changePortalPassword,
     completeConsultationRecord,
@@ -123,16 +125,14 @@ const SECURITY_QUESTIONS = [
 const SEX_OPTIONS = ["Male", "Female", "Prefer not to say"];
 
 const GENDER_OPTIONS = [
-    "Cisgender Woman",
-    "Cisgender Man",
+    "Straight",
+    "Gay",
+    "Lesbian",
+    "Bisexual",
     "Transgender Woman",
     "Transgender Man",
     "Non-binary",
-    "Genderqueer",
-    "Agender",
-    "Intersex",
-    "Two-Spirit",
-    "Questioning",
+    "Queer",
     "Prefer not to say",
     "Other / Unknown (please specify)",
 ];
@@ -412,6 +412,13 @@ const getMedicationReminderStorageKey = (user, medication) => {
     return `${MEDICATION_REMINDER_STORAGE_PREFIX}-${patientKey}-${medicineKey}-${intakeKey}`;
 };
 
+const createConsultationMedicineItemDraft = (medicineId = "") => ({
+    medicineId,
+    quantity: 1,
+    intakePerDay: 1,
+    intakeInstruction: "",
+});
+
 const createDefaultSettingsDraft = (user) => ({
     avatarDataUrl: user?.avatarDataUrl || "",
     avatarFile: null,
@@ -651,11 +658,13 @@ function UserDashboard() {
     const [consultationStartedAt, setConsultationStartedAt] = useState("");
     const [consultationForm, setConsultationForm] = useState({
         diagnosis: "",
-        medicineId: "",
-        medicineQuantity: 1,
-        medicineIntakePerDay: 1,
-        medicineIntakeInstruction: "",
+        prescribedMedicines: [createConsultationMedicineItemDraft()],
+        includeAssistiveDevice: false,
+        assistiveDeviceId: "",
+        assistiveDeviceQuantity: 1,
+        assistiveDeviceReason: "",
         note: "",
+        proofImageMode: "upload",
         proofImageDataUrl: "",
         proofImageName: "",
     });
@@ -666,6 +675,10 @@ function UserDashboard() {
     const videoScannerRef = useRef(null);
     const scannerStreamRef = useRef(null);
     const scannerIntervalRef = useRef(null);
+    const [proofCameraError, setProofCameraError] = useState("");
+    const [isProofCameraOpen, setIsProofCameraOpen] = useState(false);
+    const proofCameraVideoRef = useRef(null);
+    const proofCameraStreamRef = useRef(null);
     const [inventoryViewMode, setInventoryViewMode] = useState("all");
     const [inventoryMessage, setInventoryMessage] = useState("");
     const [inventoryError, setInventoryError] = useState("");
@@ -689,7 +702,8 @@ function UserDashboard() {
     const [deletePassword, setDeletePassword] = useState("");
     const [deleteError, setDeleteError] = useState("");
     const [currentDateTime, setCurrentDateTime] = useState(() => new Date());
-    const [medicationReminderStartedAt, setMedicationReminderStartedAt] = useState("");
+    const [medicationReminderHasStarted, setMedicationReminderHasStarted] = useState(false);
+    const [medicationReminderNextIntakeAt, setMedicationReminderNextIntakeAt] = useState("");
     const visibleInboxMessages = useMemo(() => getVisibleInboxMessages(inboxMessages, user), [inboxMessages, user]);
     const scheduleByDate = useMemo(() => buildAppointmentScheduleMap(appointments), [appointments]);
     const visibleAdminInboxMessages = useMemo(() => {
@@ -769,26 +783,96 @@ function UserDashboard() {
 
     useEffect(() => {
         if (!medicationReminderStorageKey) {
-            setMedicationReminderStartedAt("");
+            setMedicationReminderHasStarted(false);
+            setMedicationReminderNextIntakeAt("");
             return;
         }
 
-        const storedStartedAt = window.localStorage.getItem(medicationReminderStorageKey) || "";
-        setMedicationReminderStartedAt(storedStartedAt);
-    }, [medicationReminderStorageKey]);
+        const storedRaw = window.localStorage.getItem(medicationReminderStorageKey);
+        if (!storedRaw) {
+            setMedicationReminderHasStarted(false);
+            setMedicationReminderNextIntakeAt("");
+            return;
+        }
+
+        try {
+            const parsed = JSON.parse(storedRaw);
+            if (parsed && typeof parsed === "object") {
+                const hasStarted = Boolean(parsed.hasStarted);
+                const nextIntakeAt = typeof parsed.nextIntakeAt === "string" ? parsed.nextIntakeAt : "";
+                setMedicationReminderHasStarted(hasStarted);
+                setMedicationReminderNextIntakeAt(nextIntakeAt);
+                return;
+            }
+        } catch {
+            // Backward compatibility for old ISO timestamp format.
+        }
+
+        const legacyStartedAtMs = Date.parse(storedRaw);
+        const intakePerDay = Number(patientMedicationReminderContext.intakePerDay || 0);
+        const intakeCycleMinutes = intakePerDay > 0 ? Math.max(1, Math.round((24 * 60) / intakePerDay)) : 0;
+        const intakeCycleMs = intakeCycleMinutes * 60 * 1000;
+
+        if (Number.isFinite(legacyStartedAtMs) && legacyStartedAtMs > 0 && intakeCycleMs > 0) {
+            const nowMs = Date.now();
+            const elapsedMs = Math.max(0, nowMs - legacyStartedAtMs);
+            const cycleCount = Math.floor(elapsedMs / intakeCycleMs);
+            const nextIntakeMs = legacyStartedAtMs + (cycleCount + 1) * intakeCycleMs;
+            setMedicationReminderHasStarted(true);
+            setMedicationReminderNextIntakeAt(new Date(nextIntakeMs).toISOString());
+            return;
+        }
+
+        setMedicationReminderHasStarted(false);
+        setMedicationReminderNextIntakeAt("");
+    }, [medicationReminderStorageKey, patientMedicationReminderContext.intakePerDay]);
 
     useEffect(() => {
         if (!medicationReminderStorageKey) {
             return;
         }
 
-        if (!medicationReminderStartedAt) {
+        if (!medicationReminderHasStarted) {
             window.localStorage.removeItem(medicationReminderStorageKey);
             return;
         }
 
-        window.localStorage.setItem(medicationReminderStorageKey, medicationReminderStartedAt);
-    }, [medicationReminderStartedAt, medicationReminderStorageKey]);
+        const payload = {
+            hasStarted: true,
+            nextIntakeAt: medicationReminderNextIntakeAt || "",
+        };
+        window.localStorage.setItem(medicationReminderStorageKey, JSON.stringify(payload));
+    }, [medicationReminderHasStarted, medicationReminderNextIntakeAt, medicationReminderStorageKey]);
+
+    useEffect(() => {
+        const intakePerDay = Number(patientMedicationReminderContext.intakePerDay || 0);
+        const intakeCycleMinutes = intakePerDay > 0 ? Math.max(1, Math.round((24 * 60) / intakePerDay)) : 0;
+        const intakeCycleMs = intakeCycleMinutes * 60 * 1000;
+        const nextIntakeMs = Date.parse(medicationReminderNextIntakeAt || "");
+
+        if (!medicationReminderHasStarted || intakeCycleMs <= 0) {
+            return;
+        }
+
+        if (!Number.isFinite(nextIntakeMs)) {
+            setMedicationReminderNextIntakeAt(new Date(currentDateTime.getTime() + intakeCycleMs).toISOString());
+            return;
+        }
+
+        const nowMs = currentDateTime.getTime();
+        if (nowMs < nextIntakeMs) {
+            return;
+        }
+
+        const cyclesPassed = Math.floor((nowMs - nextIntakeMs) / intakeCycleMs) + 1;
+        const updatedNextIntakeMs = nextIntakeMs + cyclesPassed * intakeCycleMs;
+        setMedicationReminderNextIntakeAt(new Date(updatedNextIntakeMs).toISOString());
+    }, [
+        currentDateTime,
+        medicationReminderHasStarted,
+        medicationReminderNextIntakeAt,
+        patientMedicationReminderContext.intakePerDay,
+    ]);
 
     useEffect(() => {
         const isStaffRole = user?.role === "health_worker" || user?.role === "admin";
@@ -1292,6 +1376,68 @@ function UserDashboard() {
         }
     }, [adminInboxQuery.data, adminInboxQuery.error, user?.role]);
 
+    const getDefaultConsultationForm = (medicineId = "") => ({
+        diagnosis: "",
+        prescribedMedicines: [createConsultationMedicineItemDraft(medicineId)],
+        includeAssistiveDevice: false,
+        assistiveDeviceId: "",
+        assistiveDeviceQuantity: 1,
+        assistiveDeviceReason: "",
+        note: "",
+        proofImageMode: "upload",
+        proofImageDataUrl: "",
+        proofImageName: "",
+    });
+
+    const verifyConsultationCodeValue = (rawCode, options = {}) => {
+        const { fromScanner = false } = options;
+        setConsultationError("");
+        setConsultationMessage("");
+
+        const code = String(rawCode || "").trim();
+        if (!code) {
+            setConsultationError("Scan or enter a patient QR code first.");
+            return false;
+        }
+
+        const normalizedCode = normalizeAppointmentQrValue(code);
+        const matchedAppointment = appointments.find((appointment) =>
+            getAppointmentLookupCandidates(appointment).includes(normalizedCode)
+        );
+
+        if (!matchedAppointment) {
+            setConsultationError("This QR code is not linked to any appointment.");
+            setConsultationTarget(null);
+            setConsultationScannedPatientCode("");
+            return false;
+        }
+
+        const defaultMedicineId = inventoryItems.find((item) => item.category === "medicine" && item.quantity > 0)?.id || "";
+
+        setConsultationScanValue(code);
+        setConsultationScannedPatientCode(matchedAppointment.patientCode);
+        setConsultationTarget(matchedAppointment);
+        setConsultationStartedAt("");
+        setConsultationForm(getDefaultConsultationForm(defaultMedicineId));
+
+        if (matchedAppointment.status === "consulted") {
+            setConsultationMessage(
+                fromScanner
+                    ? `QR code detected and verified for ${matchedAppointment.patientName}. This appointment is already completed, and its consultation result is shown below.`
+                    : `Patient verified for ${matchedAppointment.patientName}. This appointment is already completed, so the consultation result is shown below.`
+            );
+            return true;
+        }
+
+        setConsultationMessage(
+            fromScanner
+                ? `QR code detected and verified for ${matchedAppointment.patientName}. Select a booked slot to continue.`
+                : `Patient verified for ${matchedAppointment.patientName}. Select a booked slot to continue.`
+        );
+
+        return true;
+    };
+
     const stopQrScanner = () => {
         if (scannerIntervalRef.current) {
             window.clearInterval(scannerIntervalRef.current);
@@ -1302,6 +1448,107 @@ function UserDashboard() {
             scannerStreamRef.current.getTracks().forEach((track) => track.stop());
             scannerStreamRef.current = null;
         }
+
+        if (videoScannerRef.current) {
+            videoScannerRef.current.srcObject = null;
+        }
+    };
+
+    const stopProofCamera = () => {
+        if (proofCameraStreamRef.current) {
+            proofCameraStreamRef.current.getTracks().forEach((track) => track.stop());
+            proofCameraStreamRef.current = null;
+        }
+
+        if (proofCameraVideoRef.current) {
+            proofCameraVideoRef.current.srcObject = null;
+        }
+
+        setIsProofCameraOpen(false);
+    };
+
+    const openProofCamera = async () => {
+        setProofCameraError("");
+
+        if (!navigator.mediaDevices?.getUserMedia) {
+            setProofCameraError("Camera access is not available in this browser. Use Upload photo instead.");
+            return false;
+        }
+
+        try {
+            stopProofCamera();
+
+            let stream;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: { ideal: "environment" },
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                    },
+                    audio: false,
+                });
+            } catch {
+                stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            }
+
+            proofCameraStreamRef.current = stream;
+            if (proofCameraVideoRef.current) {
+                proofCameraVideoRef.current.srcObject = stream;
+                await proofCameraVideoRef.current.play();
+            }
+
+            setIsProofCameraOpen(true);
+            return true;
+        } catch (error) {
+            stopProofCamera();
+            if (error?.name === "NotAllowedError" || error?.name === "SecurityError") {
+                setProofCameraError("Camera permission was denied. Allow camera access, then try again.");
+                return false;
+            }
+            if (error?.name === "NotFoundError" || error?.name === "DevicesNotFoundError") {
+                setProofCameraError("No camera device was detected on this device.");
+                return false;
+            }
+            setProofCameraError("Unable to open the camera. You can use Upload photo instead.");
+            return false;
+        }
+    };
+
+    const captureProofPhoto = () => {
+        const videoElement = proofCameraVideoRef.current;
+        if (!videoElement || !isProofCameraOpen) {
+            setProofCameraError("Camera preview is not ready yet. Please wait and try again.");
+            return;
+        }
+
+        const frameWidth = videoElement.videoWidth;
+        const frameHeight = videoElement.videoHeight;
+        if (!frameWidth || !frameHeight) {
+            setProofCameraError("Camera frame is not ready yet. Please try again in a moment.");
+            return;
+        }
+
+        const frameCanvas = document.createElement("canvas");
+        frameCanvas.width = frameWidth;
+        frameCanvas.height = frameHeight;
+        const frameContext = frameCanvas.getContext("2d");
+        if (!frameContext) {
+            setProofCameraError("Unable to capture photo from camera. Please try again.");
+            return;
+        }
+
+        frameContext.drawImage(videoElement, 0, 0, frameWidth, frameHeight);
+        const capturedPhotoDataUrl = frameCanvas.toDataURL("image/jpeg", 0.92);
+        const capturedPhotoName = `consultation-proof-${Date.now()}.jpg`;
+
+        setConsultationForm((prev) => ({
+            ...prev,
+            proofImageDataUrl: capturedPhotoDataUrl,
+            proofImageName: capturedPhotoName,
+        }));
+        setProofCameraError("");
+        stopProofCamera();
     };
 
     const closeQrScanner = () => {
@@ -1312,8 +1559,8 @@ function UserDashboard() {
     const openQrScanner = async () => {
         setQrScannerError("");
 
-        if (!("BarcodeDetector" in window)) {
-            setQrScannerError("QR camera scanning is not supported in this browser. Please paste/scan into the text field instead.");
+        if (!navigator.mediaDevices?.getUserMedia) {
+            setQrScannerError("Camera access is not available in this browser. Please paste/scan into the text field instead.");
             return;
         }
 
@@ -1321,10 +1568,20 @@ function UserDashboard() {
             stopQrScanner();
             setIsQrScannerOpen(true);
 
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: { facingMode: { ideal: "environment" } },
-                audio: false,
-            });
+            let stream;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        facingMode: { ideal: "environment" },
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                    },
+                    audio: false,
+                });
+            } catch {
+                // Fallback to generic camera constraints for stricter browsers.
+                stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+            }
 
             scannerStreamRef.current = stream;
             if (videoScannerRef.current) {
@@ -1332,38 +1589,94 @@ function UserDashboard() {
                 await videoScannerRef.current.play();
             }
 
-            const detector = new window.BarcodeDetector({ formats: ["qr_code"] });
+            let detector = null;
+            if ("BarcodeDetector" in window) {
+                try {
+                    detector = new window.BarcodeDetector({ formats: ["qr_code"] });
+                } catch {
+                    detector = null;
+                }
+            }
+
+            let isReadingFrame = false;
             scannerIntervalRef.current = window.setInterval(async () => {
                 if (!videoScannerRef.current) {
                     return;
                 }
 
+                if (isReadingFrame) {
+                    return;
+                }
+
+                isReadingFrame = true;
+
                 try {
-                    const codes = await detector.detect(videoScannerRef.current);
-                    if (codes?.length) {
-                        const value = codes[0]?.rawValue || "";
-                        if (value) {
-                            setConsultationScanValue(value);
-                            setConsultationMessage("QR code detected. Click Verify QR to continue.");
-                            setConsultationError("");
-                            closeQrScanner();
+                    let value = "";
+
+                    if (detector) {
+                        const codes = await detector.detect(videoScannerRef.current);
+                        value = codes?.[0]?.rawValue || "";
+                    }
+
+                    if (!value) {
+                        const videoElement = videoScannerRef.current;
+                        const frameWidth = videoElement.videoWidth;
+                        const frameHeight = videoElement.videoHeight;
+
+                        if (frameWidth > 0 && frameHeight > 0) {
+                            const frameCanvas = document.createElement("canvas");
+                            frameCanvas.width = frameWidth;
+                            frameCanvas.height = frameHeight;
+
+                            const frameContext = frameCanvas.getContext("2d", { willReadFrequently: true });
+                            if (frameContext) {
+                                frameContext.drawImage(videoElement, 0, 0, frameWidth, frameHeight);
+                                const frameData = frameContext.getImageData(0, 0, frameWidth, frameHeight);
+                                const decoded = jsQR(frameData.data, frameWidth, frameHeight, {
+                                    inversionAttempts: "attemptBoth",
+                                });
+                                value = decoded?.data || "";
+                            }
                         }
+                    }
+
+                    if (value) {
+                        closeQrScanner();
+                        verifyConsultationCodeValue(value, { fromScanner: true });
                     }
                 } catch {
                     // Keep scanning silently if a frame read fails.
+                } finally {
+                    isReadingFrame = false;
                 }
             }, 350);
-        } catch {
+        } catch (error) {
             closeQrScanner();
-            setQrScannerError("Unable to access camera for QR scanning.");
+            if (error?.name === "NotAllowedError" || error?.name === "SecurityError") {
+                setQrScannerError("Camera permission was denied. Allow camera access, then try again.");
+                return;
+            }
+            if (error?.name === "NotFoundError" || error?.name === "DevicesNotFoundError") {
+                setQrScannerError("No camera device was detected on this device.");
+                return;
+            }
+            setQrScannerError("Unable to access camera for QR scanning on this browser. You can still paste/scan into the text field.");
         }
     };
 
     useEffect(() => {
         return () => {
             stopQrScanner();
+            stopProofCamera();
         };
     }, []);
+
+    useEffect(() => {
+        if (consultationForm.proofImageMode !== "take") {
+            stopProofCamera();
+            setProofCameraError("");
+        }
+    }, [consultationForm.proofImageMode]);
 
     const handleManageSubmit = async (e) => {
         e.preventDefault();
@@ -1831,22 +2144,19 @@ function UserDashboard() {
         const hasMedicationReminder = Boolean(latestMedication && intakePerDay > 0);
         const intakeCycleMinutes = intakePerDay > 0 ? Math.max(1, Math.round((24 * 60) / intakePerDay)) : 0;
         const intakeCycleMs = intakeCycleMinutes * 60 * 1000;
-        const startTimestampMs = Date.parse(medicationReminderStartedAt || "");
-        const hasStartedIntake = Number.isFinite(startTimestampMs) && startTimestampMs > 0;
+        const nextIntakeTimestampMs = Date.parse(medicationReminderNextIntakeAt || "");
+        const hasStartedIntake = medicationReminderHasStarted;
 
         let nextIntakeAt = null;
         let remainingCycleMinutes = 0;
         let intakeProgressPercent = 0;
 
-        if (hasMedicationReminder && hasStartedIntake && intakeCycleMs > 0) {
+        if (hasMedicationReminder && hasStartedIntake && intakeCycleMs > 0 && Number.isFinite(nextIntakeTimestampMs)) {
             const nowMs = currentDateTime.getTime();
-            const effectiveElapsedMs = Math.max(0, nowMs - startTimestampMs);
-            const cycleCount = Math.floor(effectiveElapsedMs / intakeCycleMs);
-            const nextIntakeMs = startTimestampMs + (cycleCount + 1) * intakeCycleMs;
-            const remainingMs = Math.max(0, nextIntakeMs - nowMs);
-            const elapsedInCurrentCycleMs = effectiveElapsedMs % intakeCycleMs;
+            const remainingMs = Math.max(0, nextIntakeTimestampMs - nowMs);
+            const elapsedInCurrentCycleMs = Math.max(0, intakeCycleMs - remainingMs);
 
-            nextIntakeAt = new Date(nextIntakeMs);
+            nextIntakeAt = new Date(nextIntakeTimestampMs);
             remainingCycleMinutes = Math.max(0, Math.ceil(remainingMs / (60 * 1000)));
             intakeProgressPercent = Math.min(100, Math.round((elapsedInCurrentCycleMs / intakeCycleMs) * 100));
         }
@@ -1861,7 +2171,14 @@ function UserDashboard() {
             ? nextIntakeAt.toLocaleTimeString("en-PH", { hour: "numeric", minute: "2-digit" })
             : "";
         const handleStartTakingNow = () => {
-            setMedicationReminderStartedAt(new Date().toISOString());
+            if (intakeCycleMs <= 0) {
+                return;
+            }
+
+            const startedAtMs = Date.now();
+            const nextIntakeMs = startedAtMs + intakeCycleMs;
+            setMedicationReminderHasStarted(true);
+            setMedicationReminderNextIntakeAt(new Date(nextIntakeMs).toISOString());
         };
 
         return (
@@ -1948,7 +2265,7 @@ function UserDashboard() {
                                             Next intake: {reminderHours} hour{reminderHours === 1 ? "" : "s"} {reminderMinutes} minute{reminderMinutes === 1 ? "" : "s"}
                                         </p>
                                         <p className="text-xs text-red-100 mt-1">
-                                            Next schedule time: {nextIntakeClockLabel || "N/A"}
+                                            <span className="font-bold">Next schedule time:</span> {nextIntakeClockLabel || "N/A"}
                                         </p>
                                     </div>
                                 )}
@@ -3427,7 +3744,7 @@ function UserDashboard() {
                                                         <article key={`daily-history-${entry.id}`} className="rounded-xl border border-slate-200 bg-white p-3">
                                                             <p className="text-sm font-bold text-slate-800">{entry.patientName}</p>
                                                             <p className="text-sm text-slate-700 mt-1">Diagnosis: {entry.diagnosis}</p>
-                                                            <p className="text-sm text-slate-700">Medicine: {entry.medicineName} x {entry.medicineQuantity}</p>
+                                                            <p className="text-sm text-slate-700">Medicine: {entry.prescribedMedicineSummary || `${entry.medicineName} x ${entry.medicineQuantity}`}</p>
                                                             <p className="text-xs text-slate-500 mt-1">Booked time: {entry.timeSlot}</p>
                                                             <p className="text-xs text-slate-500">Consultation duration: {entry.durationLabel || formatDuration(entry.durationSeconds || 0)}</p>
                                                         </article>
@@ -3454,17 +3771,19 @@ function UserDashboard() {
             );
         }
 
-        const bookedAppointments = appointments.filter((appointment) => appointment.status === "booked");
+        const consultableAppointments = appointments.filter(
+            (appointment) => appointment.status === "booked" || appointment.status === "consulted"
+        );
         const matchingAppointments = consultationScannedPatientCode
-            ? bookedAppointments.filter((appointment) => {
+            ? consultableAppointments.filter((appointment) => {
                 const patientCode = String(appointment?.patientCode || appointment?.patientId || "").trim();
                 return patientCode === consultationScannedPatientCode;
             })
             : [];
         const medicineOptions = inventoryItems.filter((item) => item.category === "medicine" && item.quantity > 0);
-        const patientAccounts = patientDirectory;
+        const assistiveDeviceOptions = inventoryItems.filter((item) => item.category === "aid" && item.quantity > 0);
         const selectedPatientProfile = consultationTarget
-            ? patientAccounts.find(
+            ? patientDirectory.find(
                 (account) =>
                     account.patientCode === consultationTarget.patientCode ||
                     account.patientId === consultationTarget.patientCode
@@ -3473,43 +3792,37 @@ function UserDashboard() {
         const consultationElapsedSeconds = consultationStartedAt
             ? Math.max(0, Math.floor((currentDateTime.getTime() - new Date(consultationStartedAt).getTime()) / 1000))
             : 0;
+        const selectedConsultationResult = consultationTarget
+            ? consultations.find((entry) => entry.appointmentId === consultationTarget.id) || null
+            : null;
+        const isConsultationAlreadyCompleted = consultationTarget?.status === "consulted";
+        const resultDispensedItems = selectedConsultationResult?.dispensedItems || [];
+        const resultMedicineSummary = selectedConsultationResult?.dispensedMedicineSummary
+            || selectedConsultationResult?.prescribedMedicineSummary
+            || (selectedConsultationResult?.medicineName
+                ? `${selectedConsultationResult.medicineName} x ${selectedConsultationResult.medicineQuantity || 0}`
+                : "N/A");
+        const resultAssistiveSummary = selectedConsultationResult?.dispensedAssistiveSummary || "";
+        const resultStartedAtLabel = selectedConsultationResult?.startedAt
+            ? new Date(selectedConsultationResult.startedAt).toLocaleString("en-PH")
+            : "N/A";
+        const resultCompletedAtLabel = selectedConsultationResult?.completedAt
+            ? new Date(selectedConsultationResult.completedAt).toLocaleString("en-PH")
+            : "N/A";
 
         const verifyScan = (e) => {
             e.preventDefault();
-            setConsultationError("");
-            setConsultationMessage("");
-            const code = consultationScanValue.trim();
-            if (!code) {
-                setConsultationError("Scan or enter a patient QR code first.");
-                return;
-            }
-
-            const normalizedCode = normalizeAppointmentQrValue(code);
-            const matchedAppointment = bookedAppointments.find((appointment) =>
-                getAppointmentLookupCandidates(appointment).includes(normalizedCode)
-            );
-            if (!matchedAppointment) {
-                setConsultationError("This QR code is not linked to a booked appointment.");
-                setConsultationTarget(null);
-                setConsultationScannedPatientCode("");
-                return;
-            }
-
-            setConsultationScannedPatientCode(matchedAppointment.patientCode);
-            setConsultationTarget(matchedAppointment);
-            setConsultationStartedAt("");
-            setConsultationMessage(`Patient verified for ${matchedAppointment.patientName}. Select the booked slot to continue.`);
-            setConsultationForm((prev) => ({
-                ...prev,
-                medicineId: medicineOptions[0]?.id || "",
-                proofImageDataUrl: "",
-                proofImageName: "",
-            }));
+            verifyConsultationCodeValue(consultationScanValue, { fromScanner: false });
         };
 
         const startConsultation = () => {
             if (!consultationTarget) {
                 setConsultationError("Verify and select a booked appointment first.");
+                return;
+            }
+
+            if (isConsultationAlreadyCompleted) {
+                setConsultationError("This appointment already has a completed consultation. Review the result below.");
                 return;
             }
 
@@ -3535,6 +3848,34 @@ function UserDashboard() {
             reader.readAsDataURL(file);
         };
 
+        const updatePrescribedMedicineAt = (index, field, value) => {
+            setConsultationForm((prev) => ({
+                ...prev,
+                prescribedMedicines: prev.prescribedMedicines.map((entry, entryIndex) =>
+                    entryIndex === index
+                        ? { ...entry, [field]: value }
+                        : entry
+                ),
+            }));
+        };
+
+        const addPrescribedMedicine = () => {
+            setConsultationForm((prev) => ({
+                ...prev,
+                prescribedMedicines: [...prev.prescribedMedicines, createConsultationMedicineItemDraft("")],
+            }));
+        };
+
+        const removePrescribedMedicineAt = (index) => {
+            setConsultationForm((prev) => {
+                const nextItems = prev.prescribedMedicines.filter((_, entryIndex) => entryIndex !== index);
+                return {
+                    ...prev,
+                    prescribedMedicines: nextItems.length > 0 ? nextItems : [createConsultationMedicineItemDraft(medicineOptions[0]?.id || "")],
+                };
+            });
+        };
+
         const completeConsultation = async (e) => {
             e.preventDefault();
             setConsultationError("");
@@ -3545,40 +3886,89 @@ function UserDashboard() {
                 return;
             }
 
+            if (isConsultationAlreadyCompleted) {
+                setConsultationError("This appointment is already completed. You can review the saved consultation result.");
+                return;
+            }
+
             const diagnosis = consultationForm.diagnosis.trim();
             const note = consultationForm.note.trim();
-            const intakePerDay = Number(consultationForm.medicineIntakePerDay);
-            const intakeInstruction = consultationForm.medicineIntakeInstruction.trim();
-            const selectedMedicine = inventoryItems.find((item) => item.id === consultationForm.medicineId && item.category === "medicine");
-            const quantity = Number(consultationForm.medicineQuantity);
+            const prescribedMedicines = consultationForm.prescribedMedicines || [];
+
+            const parsedMedicines = prescribedMedicines.map((entry, index) => {
+                const selectedMedicine = inventoryItems.find((item) => item.id === entry.medicineId && item.category === "medicine");
+                return {
+                    entryNumber: index + 1,
+                    selectedMedicine,
+                    quantity: Number(entry.quantity),
+                    intakePerDay: Number(entry.intakePerDay),
+                    intakeInstruction: String(entry.intakeInstruction || "").trim(),
+                };
+            });
+
+            const selectedMedicineIds = parsedMedicines
+                .map((entry) => entry.selectedMedicine?.id)
+                .filter(Boolean);
+            const hasDuplicateMedicines = new Set(selectedMedicineIds).size !== selectedMedicineIds.length;
+
+            const includeAssistiveDevice = Boolean(consultationForm.includeAssistiveDevice);
+            const selectedAssistiveDevice = includeAssistiveDevice
+                ? inventoryItems.find((item) => item.id === consultationForm.assistiveDeviceId && item.category === "aid")
+                : null;
+            const assistiveDeviceQuantity = Number(consultationForm.assistiveDeviceQuantity);
+            const assistiveDeviceReason = String(consultationForm.assistiveDeviceReason || "").trim();
 
             if (!diagnosis) {
                 setConsultationError("Please enter a diagnosis.");
                 return;
             }
-            if (!selectedMedicine) {
-                setConsultationError("Please choose a medicine from inventory.");
+            if (!parsedMedicines.length) {
+                setConsultationError("Please add at least one prescribed medicine.");
                 return;
             }
-            if (!Number.isInteger(quantity) || quantity <= 0) {
-                setConsultationError("Medicine quantity must be a positive whole number.");
-                return;
-            }
-            if (selectedMedicine.quantity < quantity) {
-                setConsultationError("Not enough medicine stock available.");
+            if (hasDuplicateMedicines) {
+                setConsultationError("Each prescribed medicine must be unique. Update duplicate entries.");
                 return;
             }
             if (!note) {
                 setConsultationError("Please add a note to the patient.");
                 return;
             }
-            if (!Number.isInteger(intakePerDay) || intakePerDay <= 0) {
-                setConsultationError("Intake/day must be a positive whole number.");
-                return;
+            for (const medicine of parsedMedicines) {
+                if (!medicine.selectedMedicine) {
+                    setConsultationError(`Please choose a medicine for prescribed entry #${medicine.entryNumber}.`);
+                    return;
+                }
+                if (!Number.isInteger(medicine.quantity) || medicine.quantity <= 0) {
+                    setConsultationError(`Medicine quantity for entry #${medicine.entryNumber} must be a positive whole number.`);
+                    return;
+                }
+                if (medicine.selectedMedicine.quantity < medicine.quantity) {
+                    setConsultationError(`Not enough stock for ${medicine.selectedMedicine.name}.`);
+                    return;
+                }
+                if (!Number.isInteger(medicine.intakePerDay) || medicine.intakePerDay <= 0) {
+                    setConsultationError(`Intake/day for entry #${medicine.entryNumber} must be a positive whole number.`);
+                    return;
+                }
             }
-            if (intakePerDay > 3 && !intakeInstruction) {
-                setConsultationError("Please specify the intake instruction for more than 3x/day.");
-                return;
+            if (includeAssistiveDevice) {
+                if (!selectedAssistiveDevice) {
+                    setConsultationError("Please choose an assistive device to dispense.");
+                    return;
+                }
+                if (!Number.isInteger(assistiveDeviceQuantity) || assistiveDeviceQuantity <= 0) {
+                    setConsultationError("Assistive device quantity must be a positive whole number.");
+                    return;
+                }
+                if (selectedAssistiveDevice.quantity < assistiveDeviceQuantity) {
+                    setConsultationError("Not enough assistive device stock available.");
+                    return;
+                }
+                if (!assistiveDeviceReason) {
+                    setConsultationError("Please specify the reason for giving the assistive device.");
+                    return;
+                }
             }
             if (!consultationStartedAt) {
                 setConsultationError("Click Start consultation before completing this record.");
@@ -3592,6 +3982,8 @@ function UserDashboard() {
             const durationSeconds = Math.max(1, consultationElapsedSeconds);
             const completedAt = new Date().toISOString();
             let consultationRecordId = `${consultationTarget.id}-consulted`;
+            const primaryMedicine = parsedMedicines[0];
+            const additionalMedicines = parsedMedicines.slice(1);
 
             try {
                 const persistedConsultationId = await completeConsultationRecord({
@@ -3601,14 +3993,36 @@ function UserDashboard() {
                     startedAt: consultationStartedAt,
                     completedAt,
                     proofImageUrl: consultationForm.proofImageDataUrl,
-                    medicineItemId: selectedMedicine.id,
-                    medicineQuantity: quantity,
-                    medicineIntakePerDay: intakePerDay,
-                    medicineIntakeInstruction: intakeInstruction,
+                    medicineItemId: primaryMedicine.selectedMedicine.id,
+                    medicineQuantity: primaryMedicine.quantity,
+                    medicineIntakePerDay: primaryMedicine.intakePerDay,
+                    medicineIntakeInstruction: primaryMedicine.intakePerDay > 3 ? note : primaryMedicine.intakeInstruction,
                 });
 
                 if (persistedConsultationId) {
                     consultationRecordId = persistedConsultationId;
+                }
+
+                for (const medicine of additionalMedicines) {
+                    await addConsultationDispensedItem({
+                        consultationId: consultationRecordId,
+                        itemId: medicine.selectedMedicine.id,
+                        quantity: medicine.quantity,
+                        medicineIntakePerDay: medicine.intakePerDay,
+                        medicineIntakeInstruction: medicine.intakePerDay > 3 ? note : medicine.intakeInstruction,
+                        movementNote: "Additional medicine dispensed to patient",
+                    });
+                }
+
+                if (includeAssistiveDevice && selectedAssistiveDevice) {
+                    await addConsultationDispensedItem({
+                        consultationId: consultationRecordId,
+                        itemId: selectedAssistiveDevice.id,
+                        quantity: assistiveDeviceQuantity,
+                        medicineIntakePerDay: 1,
+                        medicineIntakeInstruction: "",
+                        movementNote: `Assistive device issued: ${assistiveDeviceReason}`,
+                    });
                 }
             } catch (completeError) {
                 setConsultationError(completeError?.message || "Unable to save consultation in backend.");
@@ -3623,11 +4037,42 @@ function UserDashboard() {
                 dateKey: consultationTarget.dateKey,
                 timeSlot: consultationTarget.timeSlot,
                 diagnosis,
-                medicineId: selectedMedicine.id,
-                medicineName: selectedMedicine.name,
-                medicineQuantity: quantity,
-                medicineIntakePerDay: intakePerDay,
-                medicineIntakeInstruction: intakeInstruction,
+                medicineId: primaryMedicine.selectedMedicine.id,
+                medicineName: primaryMedicine.selectedMedicine.name,
+                medicineQuantity: primaryMedicine.quantity,
+                medicineIntakePerDay: primaryMedicine.intakePerDay,
+                medicineIntakeInstruction: primaryMedicine.intakePerDay > 3 ? note : primaryMedicine.intakeInstruction,
+                dispensedItems: [
+                    ...parsedMedicines.map((medicine) => ({
+                        itemId: medicine.selectedMedicine.id,
+                        itemName: medicine.selectedMedicine.name,
+                        itemCategory: "medicine",
+                        unit: medicine.selectedMedicine.unit || "",
+                        quantity: medicine.quantity,
+                        medicineIntakePerDay: medicine.intakePerDay,
+                        medicineIntakeInstruction: medicine.intakePerDay > 3 ? note : medicine.intakeInstruction,
+                    })),
+                    ...(includeAssistiveDevice && selectedAssistiveDevice
+                        ? [{
+                            itemId: selectedAssistiveDevice.id,
+                            itemName: selectedAssistiveDevice.name,
+                            itemCategory: "aid",
+                            unit: selectedAssistiveDevice.unit || "",
+                            quantity: assistiveDeviceQuantity,
+                            medicineIntakePerDay: 1,
+                            medicineIntakeInstruction: "",
+                        }]
+                        : []),
+                ],
+                prescribedMedicineSummary: parsedMedicines
+                    .map((medicine) => `${medicine.selectedMedicine.name} x ${medicine.quantity}`)
+                    .join(", "),
+                dispensedMedicineSummary: parsedMedicines
+                    .map((medicine) => `${medicine.selectedMedicine.name} x ${medicine.quantity}`)
+                    .join(", "),
+                dispensedAssistiveSummary: includeAssistiveDevice && selectedAssistiveDevice
+                    ? `${selectedAssistiveDevice.name} x ${assistiveDeviceQuantity}`
+                    : "",
                 note,
                 workerName: buildPatientDisplayName(user),
                 startedAt: consultationStartedAt,
@@ -3638,10 +4083,20 @@ function UserDashboard() {
                 proofImageName: consultationForm.proofImageName,
             };
 
+            const inventoryAdjustments = new Map();
+            parsedMedicines.forEach((medicine) => {
+                const current = inventoryAdjustments.get(medicine.selectedMedicine.id) || 0;
+                inventoryAdjustments.set(medicine.selectedMedicine.id, current + medicine.quantity);
+            });
+            if (includeAssistiveDevice && selectedAssistiveDevice) {
+                const current = inventoryAdjustments.get(selectedAssistiveDevice.id) || 0;
+                inventoryAdjustments.set(selectedAssistiveDevice.id, current + assistiveDeviceQuantity);
+            }
+
             setInventoryItems((prev) =>
                 prev.map((item) =>
-                    item.id === selectedMedicine.id
-                        ? { ...item, quantity: item.quantity - quantity }
+                    inventoryAdjustments.has(item.id)
+                        ? { ...item, quantity: item.quantity - inventoryAdjustments.get(item.id) }
                         : item
                 )
             );
@@ -3655,31 +4110,20 @@ function UserDashboard() {
             );
 
             setConsultations((prev) => [consultationRecord, ...prev]);
-            setConsultationMessage("Consultation completed and inventory updated.");
+            setConsultationMessage("Consultation completed. Prescribed medicines and assistive device records were saved.");
             setConsultationError("");
             setConsultationTarget(null);
             setConsultationStartedAt("");
             setConsultationScannedPatientCode("");
             setConsultationScanValue("");
-            setConsultationForm({
-                diagnosis: "",
-                medicineId: medicineOptions[0]?.id || "",
-                medicineQuantity: 1,
-                medicineIntakePerDay: 1,
-                medicineIntakeInstruction: "",
-                note: "",
-                proofImageDataUrl: "",
-                proofImageName: "",
-            });
+            setConsultationForm(getDefaultConsultationForm(medicineOptions[0]?.id || ""));
         };
-
-        const selectedPatientAppointments = matchingAppointments;
 
         return (
             <div className="space-y-6">
                 <div>
                     <h1 className="text-3xl font-bold text-slate-900 mb-1">Consultation</h1>
-                    <p className="text-slate-600">Verify the booked patient QR code, then complete diagnosis and medicine dispense.</p>
+                    <p className="text-slate-600">Verify a patient QR code to continue consultation or review an already completed result.</p>
                     <Link
                         to="/history"
                         className="inline-flex items-center mt-3 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
@@ -3703,7 +4147,7 @@ function UserDashboard() {
                                 type="submit"
                                 className="rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-800"
                             >
-                                Verify QR
+                                Verify code
                             </button>
                             <button
                                 type="button"
@@ -3731,19 +4175,23 @@ function UserDashboard() {
 
                         {consultationScannedPatientCode && (
                             <div className="space-y-3">
-                                <p className="text-sm font-semibold text-slate-700">Booked appointments for {consultationScannedPatientCode}</p>
+                                <p className="text-sm font-semibold text-slate-700">Appointments for {consultationScannedPatientCode}</p>
                                 <div className="space-y-2">
-                                    {selectedPatientAppointments.length === 0 ? (
-                                        <p className="text-sm text-slate-500">No booked appointment found for this patient.</p>
+                                    {matchingAppointments.length === 0 ? (
+                                        <p className="text-sm text-slate-500">No booked or completed appointment found for this patient.</p>
                                     ) : (
-                                        selectedPatientAppointments.map((appointment) => (
+                                        matchingAppointments.map((appointment) => (
                                             <button
                                                 key={appointment.id}
                                                 type="button"
                                                 onClick={() => {
                                                     setConsultationTarget(appointment);
                                                     setConsultationStartedAt("");
-                                                    setConsultationMessage(`Selected ${appointment.patientName} on ${appointment.dateKey} at ${appointment.timeSlot}.`);
+                                                    if (appointment.status === "consulted") {
+                                                        setConsultationMessage(`Selected completed consultation for ${appointment.patientName} on ${appointment.dateKey} at ${appointment.timeSlot}.`);
+                                                    } else {
+                                                        setConsultationMessage(`Selected ${appointment.patientName} on ${appointment.dateKey} at ${appointment.timeSlot}.`);
+                                                    }
                                                 }}
                                                 className={`w-full rounded-xl border p-3 text-left transition-all ${
                                                     consultationTarget?.id === appointment.id
@@ -3751,10 +4199,17 @@ function UserDashboard() {
                                                         : "border-slate-200 bg-white hover:bg-slate-50"
                                                 }`}
                                             >
-                                                <p className="font-semibold text-slate-800">{appointment.patientName}</p>
-                                                <p className="text-sm text-slate-500">
-                                                    {formatLongDate(appointment.dateKey)} at {appointment.timeSlot}
-                                                </p>
+                                                <div className="flex items-center justify-between gap-2">
+                                                    <p className="font-semibold text-slate-800">{appointment.patientName}</p>
+                                                    <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide ${
+                                                        appointment.status === "consulted"
+                                                            ? "bg-emerald-100 text-emerald-700"
+                                                            : "bg-sky-100 text-sky-700"
+                                                    }`}>
+                                                        {appointment.status}
+                                                    </span>
+                                                </div>
+                                                <p className="text-sm text-slate-500">{formatLongDate(appointment.dateKey)} at {appointment.timeSlot}</p>
                                             </button>
                                         ))
                                     )}
@@ -3766,17 +4221,12 @@ function UserDashboard() {
                     <form onSubmit={completeConsultation} className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-4">
                         <h2 className="text-lg font-bold text-slate-800">Consultation Details</h2>
                         {!consultationTarget ? (
-                            <p className="text-slate-600">Verify a booked QR code and select an appointment to unlock the consultation form.</p>
+                            <p className="text-slate-600">Verify a QR code and select an appointment to open consultation or review completed results.</p>
                         ) : (
                             <>
                                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700 space-y-2">
                                     <p className="font-bold text-slate-800">Patient Information</p>
-                                    <p>
-                                        <span className="font-semibold">Name:</span>{" "}
-                                        {selectedPatientProfile
-                                            ? `${selectedPatientProfile.surname || "N/A"}, ${selectedPatientProfile.firstname || "N/A"}, ${selectedPatientProfile.middlename || "N/A"}`
-                                            : consultationTarget.patientName}
-                                    </p>
+                                    <p><span className="font-semibold">Name:</span> {selectedPatientProfile ? `${selectedPatientProfile.surname || "N/A"}, ${selectedPatientProfile.firstname || "N/A"}, ${selectedPatientProfile.middlename || "N/A"}` : consultationTarget.patientName}</p>
                                     <p><span className="font-semibold">Patient ID:</span> {selectedPatientProfile?.patientCode || selectedPatientProfile?.patientId || consultationTarget.patientCode}</p>
                                     <p><span className="font-semibold">DOB / Age:</span> {selectedPatientProfile?.dob || "N/A"} / {calculateAge(selectedPatientProfile?.dob)}</p>
                                     <p><span className="font-semibold">Contact:</span> {selectedPatientProfile?.contactNumber || "N/A"}</p>
@@ -3789,136 +4239,195 @@ function UserDashboard() {
                                     <p><span className="font-semibold">Symptoms:</span> {consultationTarget.symptoms.join(", ")}</p>
                                 </div>
 
-                                <div className="rounded-xl border border-slate-200 bg-white p-4">
-                                    <div className="flex flex-wrap items-center justify-between gap-3">
-                                        <div>
-                                            <p className="text-sm font-semibold text-slate-700">Consultation duration</p>
-                                            <p className="text-lg font-bold text-slate-900">{formatDuration(consultationElapsedSeconds)}</p>
+                                {isConsultationAlreadyCompleted ? (
+                                    <>
+                                        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                                            <p className="text-sm font-bold text-emerald-900">Consultation already completed</p>
+                                            <p className="text-xs text-emerald-700 mt-1">This appointment already has a saved result. Review it below.</p>
                                         </div>
-                                        {!consultationStartedAt ? (
-                                            <button
-                                                type="button"
-                                                onClick={startConsultation}
-                                                className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-700"
-                                            >
-                                                Start consultation
-                                            </button>
-                                        ) : (
-                                            <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">Timer running</span>
-                                        )}
-                                    </div>
-                                </div>
-
-                                <div>
-                                    <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="diagnosis">Diagnosis</label>
-                                    <textarea
-                                        id="diagnosis"
-                                        value={consultationForm.diagnosis}
-                                        onChange={(e) => setConsultationForm((prev) => ({ ...prev, diagnosis: e.target.value }))}
-                                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red"
-                                        rows="3"
-                                        placeholder="Diagnose the patient"
-                                    />
-                                </div>
-
-                                <div className="grid gap-3 sm:grid-cols-3">
-                                    <div>
-                                        <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="medicine">Prescribe medicine</label>
-                                        <select
-                                            id="medicine"
-                                            value={consultationForm.medicineId}
-                                            onChange={(e) => setConsultationForm((prev) => ({ ...prev, medicineId: e.target.value }))}
-                                            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red"
-                                        >
-                                            <option value="">Choose a medicine</option>
-                                            {medicineOptions.map((item) => (
-                                                <option key={item.id} value={item.id}>
-                                                    {item.name} ({item.quantity} {item.unit})
-                                                </option>
+                                        <section className="rounded-xl border border-slate-200 bg-white p-4 space-y-2 text-sm text-slate-700">
+                                            <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Consultation result</h3>
+                                            <p><span className="font-semibold text-slate-900">Diagnosis:</span> {selectedConsultationResult?.diagnosis || "N/A"}</p>
+                                            <p><span className="font-semibold text-slate-900">Medicines dispensed:</span> {resultMedicineSummary}</p>
+                                            {resultDispensedItems.filter((item) => item.itemCategory === "medicine").map((item, index) => (
+                                                <p key={`consulted-medicine-${item.itemId || index}`}><span className="font-semibold text-slate-900">Medicine {index + 1}:</span> {item.itemName || "Medicine"} x {item.quantity || 0}</p>
                                             ))}
-                                        </select>
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="quantity">Quantity</label>
-                                        <input
-                                            id="quantity"
-                                            type="number"
-                                            min="1"
-                                            value={consultationForm.medicineQuantity}
-                                            onChange={(e) => setConsultationForm((prev) => ({ ...prev, medicineQuantity: e.target.value }))}
-                                            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red"
-                                        />
-                                    </div>
-                                    <div>
-                                        <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="intake-frequency">Intake / day</label>
-                                        <input
-                                            id="intake-frequency"
-                                            type="number"
-                                            min="1"
-                                            value={consultationForm.medicineIntakePerDay}
-                                            onChange={(e) => setConsultationForm((prev) => ({ ...prev, medicineIntakePerDay: e.target.value }))}
-                                            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red"
-                                        />
-                                        <p className="text-xs text-slate-500 mt-1">Quick choices: 1, 2, or 3. For more than 3, provide instruction below.</p>
-                                    </div>
-                                </div>
-
-                                {Number(consultationForm.medicineIntakePerDay) > 3 && (
-                                    <div>
-                                        <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="more-than-3x-note">
-                                            Specify intake instruction (required)
-                                        </label>
-                                        <input
-                                            id="more-than-3x-note"
-                                            type="text"
-                                            value={consultationForm.medicineIntakeInstruction}
-                                            onChange={(e) => setConsultationForm((prev) => ({ ...prev, medicineIntakeInstruction: e.target.value }))}
-                                            className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red"
-                                            placeholder="Example: take every 4 hours while awake"
-                                        />
-                                    </div>
-                                )}
-
-                                <div>
-                                    <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="note">Note to patient</label>
-                                    <input
-                                        id="note"
-                                        type="text"
-                                        value={consultationForm.note}
-                                        onChange={(e) => setConsultationForm((prev) => ({ ...prev, note: e.target.value }))}
-                                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red"
-                                        placeholder='Example: take 3x a day'
-                                    />
-                                </div>
-
-                                <div>
-                                    <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="consult-proof">
-                                        Consultation proof photo (required)
-                                    </label>
-                                    <input
-                                        id="consult-proof"
-                                        type="file"
-                                        accept="image/*"
-                                        capture="environment"
-                                        onChange={(e) => handleProofImageChange(e.target.files?.[0] || null)}
-                                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                                        required
-                                    />
-                                    {consultationForm.proofImageDataUrl && (
-                                        <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                                            <p className="text-xs text-slate-500 mb-2">Selected: {consultationForm.proofImageName || "Captured image"}</p>
-                                            <img
-                                                src={consultationForm.proofImageDataUrl}
-                                                alt="Consultation proof"
-                                                className="h-40 w-full object-cover rounded-lg"
-                                            />
+                                            {resultAssistiveSummary ? (
+                                                <p><span className="font-semibold text-slate-900">Assistive devices dispensed:</span> {resultAssistiveSummary}</p>
+                                            ) : null}
+                                            <p><span className="font-semibold text-slate-900">Patient note:</span> {selectedConsultationResult?.note || "N/A"}</p>
+                                        </section>
+                                        <section className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2 text-sm text-slate-700">
+                                            <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Timeline</h3>
+                                            <p><span className="font-semibold text-slate-900">Started:</span> {resultStartedAtLabel}</p>
+                                            <p><span className="font-semibold text-slate-900">Completed:</span> {resultCompletedAtLabel}</p>
+                                            <p><span className="font-semibold text-slate-900">Duration:</span> {selectedConsultationResult?.durationLabel || formatDuration(selectedConsultationResult?.durationSeconds || 0)}</p>
+                                            <p><span className="font-semibold text-slate-900">Attending health worker:</span> {selectedConsultationResult?.workerName || "N/A"}</p>
+                                        </section>
+                                    </>
+                                ) : (
+                                    <>
+                                        <div className="rounded-xl border border-slate-200 bg-white p-4">
+                                            <div className="flex flex-wrap items-center justify-between gap-3">
+                                                <div>
+                                                    <p className="text-sm font-semibold text-slate-700">Consultation duration</p>
+                                                    <p className="text-lg font-bold text-slate-900">{formatDuration(consultationElapsedSeconds)}</p>
+                                                </div>
+                                                {!consultationStartedAt ? (
+                                                    <button type="button" onClick={startConsultation} className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-700">Start consultation</button>
+                                                ) : (
+                                                    <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700">Timer running</span>
+                                                )}
+                                            </div>
                                         </div>
-                                    )}
-                                </div>
 
-                                <button type="submit" className="rounded-lg bg-brand-red px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-dark">
-                                    Complete Consultation
-                                </button>
+                                        <div>
+                                            <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="diagnosis">Diagnosis</label>
+                                            <textarea id="diagnosis" value={consultationForm.diagnosis} onChange={(e) => setConsultationForm((prev) => ({ ...prev, diagnosis: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" rows="3" placeholder="Diagnose the patient" />
+                                        </div>
+
+                                        <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <p className="text-sm font-bold text-slate-800">Prescribed medicine</p>
+                                                <button type="button" onClick={addPrescribedMedicine} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100">Add more prescribed medicine</button>
+                                            </div>
+                                            {consultationForm.prescribedMedicines.map((medicineEntry, medicineIndex) => (
+                                                <div key={`prescribed-medicine-${medicineIndex}`} className="rounded-xl border border-slate-200 bg-white p-3 space-y-3">
+                                                    <div className="flex items-center justify-between gap-3">
+                                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Medicine #{medicineIndex + 1}</p>
+                                                        {consultationForm.prescribedMedicines.length > 1 && (
+                                                            <button type="button" onClick={() => removePrescribedMedicineAt(medicineIndex)} className="rounded-md border border-red-200 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-100">Remove</button>
+                                                        )}
+                                                    </div>
+                                                    <div className="grid gap-3 sm:grid-cols-3">
+                                                        <div>
+                                                            <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor={`medicine-${medicineIndex}`}>Medicine</label>
+                                                            <select id={`medicine-${medicineIndex}`} value={medicineEntry.medicineId} onChange={(e) => updatePrescribedMedicineAt(medicineIndex, "medicineId", e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red">
+                                                                <option value="">Choose a medicine</option>
+                                                                {medicineOptions.map((item) => (
+                                                                    <option key={item.id} value={item.id}>{item.name} ({item.quantity} {item.unit})</option>
+                                                                ))}
+                                                            </select>
+                                                        </div>
+                                                        <div>
+                                                            <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor={`quantity-${medicineIndex}`}>Quantity</label>
+                                                            <input id={`quantity-${medicineIndex}`} type="number" min="1" value={medicineEntry.quantity} onChange={(e) => updatePrescribedMedicineAt(medicineIndex, "quantity", e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" />
+                                                        </div>
+                                                        <div>
+                                                            <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor={`intake-frequency-${medicineIndex}`}>Intake / day</label>
+                                                            <input id={`intake-frequency-${medicineIndex}`} type="number" min="1" value={medicineEntry.intakePerDay} onChange={(e) => updatePrescribedMedicineAt(medicineIndex, "intakePerDay", e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                            <p className="text-xs text-slate-500">Quick choices: Intake/day can be 1, 2, or 3. For more than 3, write guidance in Note to patient.</p>
+                                        </div>
+
+                                        <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+                                            <div className="flex items-center justify-between gap-3">
+                                                <p className="text-sm font-bold text-slate-800">Assistive device</p>
+                                                <button type="button" onClick={() => setConsultationForm((prev) => ({ ...prev, includeAssistiveDevice: !prev.includeAssistiveDevice, assistiveDeviceId: !prev.includeAssistiveDevice ? prev.assistiveDeviceId : "", assistiveDeviceQuantity: !prev.includeAssistiveDevice ? prev.assistiveDeviceQuantity : 1, assistiveDeviceReason: !prev.includeAssistiveDevice ? prev.assistiveDeviceReason : "" }))} className={`rounded-lg px-3 py-2 text-xs font-semibold ${consultationForm.includeAssistiveDevice ? "bg-emerald-600 text-white hover:bg-emerald-700" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"}`}>
+                                                    {consultationForm.includeAssistiveDevice ? "Assistive device enabled" : "Give assistive device"}
+                                                </button>
+                                            </div>
+                                            {consultationForm.includeAssistiveDevice && (
+                                                <div className="space-y-3">
+                                                    <div className="grid gap-3 sm:grid-cols-2">
+                                                        <div>
+                                                            <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="assistive-device">Assistive device</label>
+                                                            <select id="assistive-device" value={consultationForm.assistiveDeviceId} onChange={(e) => setConsultationForm((prev) => ({ ...prev, assistiveDeviceId: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red">
+                                                                <option value="">Choose an assistive device</option>
+                                                                {assistiveDeviceOptions.map((item) => (
+                                                                    <option key={item.id} value={item.id}>{item.name} ({item.quantity} {item.unit})</option>
+                                                                ))}
+                                                            </select>
+                                                        </div>
+                                                        <div>
+                                                            <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="assistive-quantity">Quantity</label>
+                                                            <input id="assistive-quantity" type="number" min="1" value={consultationForm.assistiveDeviceQuantity} onChange={(e) => setConsultationForm((prev) => ({ ...prev, assistiveDeviceQuantity: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" />
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="assistive-reason">Please specify the reason for giving assistive device</label>
+                                                        <textarea id="assistive-reason" value={consultationForm.assistiveDeviceReason} onChange={(e) => setConsultationForm((prev) => ({ ...prev, assistiveDeviceReason: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" rows="2" placeholder="Example: temporary mobility support due to ankle injury" />
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="note">Note to patient</label>
+                                            <input id="note" type="text" value={consultationForm.note} onChange={(e) => setConsultationForm((prev) => ({ ...prev, note: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" placeholder="Example: take 3x a day" />
+                                        </div>
+
+                                        <div>
+                                            <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="consult-proof">Consultation proof photo (required)</label>
+                                            <div className="mb-2 flex flex-wrap gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setConsultationForm((prev) => ({ ...prev, proofImageMode: "upload" }));
+                                                        setProofCameraError("");
+                                                    }}
+                                                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${consultationForm.proofImageMode === "upload" ? "bg-slate-900 text-white" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"}`}
+                                                >
+                                                    Upload photo
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={async () => {
+                                                        setConsultationForm((prev) => ({ ...prev, proofImageMode: "take" }));
+                                                        await openProofCamera();
+                                                    }}
+                                                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${consultationForm.proofImageMode === "take" ? "bg-sky-600 text-white" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"}`}
+                                                >
+                                                    Take a photo
+                                                </button>
+                                            </div>
+                                            {consultationForm.proofImageMode === "upload" ? (
+                                                <>
+                                                    <input id="consult-proof" type="file" accept="image/*" onChange={(e) => handleProofImageChange(e.target.files?.[0] || null)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                                                    <p className="text-xs text-slate-500 mt-1">Upload an existing consultation proof image from this computer.</p>
+                                                </>
+                                            ) : (
+                                                <div className="space-y-2">
+                                                    {proofCameraError && (
+                                                        <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{proofCameraError}</p>
+                                                    )}
+                                                    <div className="rounded-xl border border-slate-200 bg-black overflow-hidden">
+                                                        <video ref={proofCameraVideoRef} className="w-full h-56 object-cover" playsInline muted />
+                                                    </div>
+                                                    <div className="flex flex-wrap gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={captureProofPhoto}
+                                                            disabled={!isProofCameraOpen}
+                                                            className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                        >
+                                                            Capture photo
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={openProofCamera}
+                                                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                                        >
+                                                            Reopen camera
+                                                        </button>
+                                                    </div>
+                                                    <p className="text-xs text-slate-500">After capture, the photo is automatically attached as consultation proof.</p>
+                                                </div>
+                                            )}
+                                            {consultationForm.proofImageDataUrl && (
+                                                <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                                    <p className="text-xs text-slate-500 mb-2">Selected: {consultationForm.proofImageName || "Captured image"}</p>
+                                                    <img src={consultationForm.proofImageDataUrl} alt="Consultation proof" className="h-40 w-full object-cover rounded-lg" />
+                                                </div>
+                                            )}
+                                        </div>
+
+                                        <button type="submit" className="rounded-lg bg-brand-red px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-dark">Complete Consultation</button>
+                                    </>
+                                )}
                             </>
                         )}
                     </form>
@@ -3932,13 +4441,7 @@ function UserDashboard() {
                                     <h3 className="text-xl font-bold text-slate-900">QR Camera Scanner</h3>
                                     <p className="text-sm text-slate-600">Position the patient QR code inside the camera view.</p>
                                 </div>
-                                <button
-                                    type="button"
-                                    onClick={closeQrScanner}
-                                    className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
-                                >
-                                    Close
-                                </button>
+                                <button type="button" onClick={closeQrScanner} className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Close</button>
                             </div>
                             <div className="rounded-xl border border-slate-200 bg-black overflow-hidden">
                                 <video ref={videoScannerRef} className="w-full h-72 object-cover" playsInline muted />
@@ -3960,7 +4463,52 @@ function UserDashboard() {
             );
         }
 
-        const visibleItems = inventoryItems.filter((item) => inventoryViewMode === "medicine" ? item.category === "medicine" : true);
+        const getInventoryGroup = (item) => {
+            const normalizedName = String(item?.name || "").toLowerCase();
+
+            if (/vitamin|ascorbic|multivit|mineral|supplement/.test(normalizedName)) {
+                return "vitamins";
+            }
+
+            if (/eyeglass|eye\s*glass|glasses|spectacle|lens|antiradiation/.test(normalizedName)) {
+                return "eyeglasses";
+            }
+
+            if (item?.category === "aid") {
+                return "assistive";
+            }
+
+            if (item?.category === "medicine") {
+                return "medicine";
+            }
+
+            return "others";
+        };
+
+        const visibleItems = inventoryItems.filter((item) => {
+            if (inventoryViewMode === "all") {
+                return true;
+            }
+
+            const group = getInventoryGroup(item);
+            if (inventoryViewMode === "medicine") {
+                return group === "medicine";
+            }
+            if (inventoryViewMode === "vitamins") {
+                return group === "vitamins";
+            }
+            if (inventoryViewMode === "eyeglasses") {
+                return group === "eyeglasses";
+            }
+            if (inventoryViewMode === "assistive") {
+                return group === "assistive";
+            }
+            if (inventoryViewMode === "others") {
+                return group === "others";
+            }
+
+            return true;
+        });
         const isAdmin = user?.role === "admin";
 
         const refreshInventory = async () => {
@@ -4035,7 +4583,11 @@ function UserDashboard() {
                     <div className="flex flex-wrap gap-2">
                         {[
                             { value: "all", label: "All items" },
-                            { value: "medicine", label: "Medicine only" },
+                            { value: "medicine", label: "Medicine" },
+                            { value: "vitamins", label: "Vitamins" },
+                            { value: "eyeglasses", label: "Eyeglasses" },
+                            { value: "assistive", label: "Assistive Devices/Walking Aids" },
+                            { value: "others", label: "Others" },
                         ].map((option) => (
                             <button
                                 key={option.value}
@@ -4157,6 +4709,11 @@ function UserDashboard() {
                 selectedRecord?.patientContact || selectedPatientHistoryProfile?.contactNumber || "N/A";
             const resolvedPatientAddress = selectedRecord?.patientAddress
                 || (selectedPatientHistoryProfile ? buildAddressLine(selectedPatientHistoryProfile) : "N/A");
+            const selectedRecordMedicineSummary = selectedRecord?.dispensedMedicineSummary
+                || selectedRecord?.prescribedMedicineSummary
+                || `${selectedRecord?.medicineName || "N/A"} x ${selectedRecord?.medicineQuantity || 0}`;
+            const selectedRecordAssistiveSummary = selectedRecord?.dispensedAssistiveSummary || "";
+            const selectedRecordProofImage = selectedRecord?.proofImageDataUrl || "";
 
             return (
                 <div className="space-y-6">
@@ -4222,8 +4779,25 @@ function UserDashboard() {
                                         <section className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
                                             <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Treatment Summary</h3>
                                             <p><span className="font-semibold text-slate-900">Diagnosis:</span> {selectedRecord.diagnosis || "N/A"}</p>
-                                            <p><span className="font-semibold text-slate-900">Medicine given:</span> {selectedRecord.medicineName || "N/A"} x {selectedRecord.medicineQuantity || 0}</p>
+                                            <p><span className="font-semibold text-slate-900">Medicine given:</span> {selectedRecordMedicineSummary}</p>
+                                            {selectedRecordAssistiveSummary ? (
+                                                <p><span className="font-semibold text-slate-900">Assistive device given:</span> {selectedRecordAssistiveSummary}</p>
+                                            ) : null}
                                             <p><span className="font-semibold text-slate-900">Note:</span> {selectedRecord.note || "N/A"}</p>
+                                        </section>
+
+                                        <section className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
+                                            <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Consultation Proof Photo</h3>
+                                            {selectedRecordProofImage ? (
+                                                <img
+                                                    src={selectedRecordProofImage}
+                                                    alt={`Consultation proof for ${selectedRecord.patientName || "patient"}`}
+                                                    className="w-full h-64 rounded-lg border border-slate-200 object-cover bg-slate-100"
+                                                    loading="lazy"
+                                                />
+                                            ) : (
+                                                <p className="text-slate-600">No consultation proof photo was uploaded for this record.</p>
+                                            )}
                                         </section>
                                     </div>
                                 )}
@@ -4254,6 +4828,16 @@ function UserDashboard() {
         const selectedPatientHistoryRecord = patientConsultationHistory.find(
             (entry) => String(entry.id) === String(patientHistorySelectedRecordId)
         ) || patientConsultationHistory[0] || null;
+        const selectedPatientDispensedItems = selectedPatientHistoryRecord?.dispensedItems || [];
+        const selectedPatientMedicineItems = selectedPatientDispensedItems.filter((item) => item.itemCategory === "medicine");
+        const selectedPatientAssistiveItems = selectedPatientDispensedItems.filter((item) => item.itemCategory === "aid");
+        const selectedPatientMedicineSummary = selectedPatientHistoryRecord?.dispensedMedicineSummary
+            || selectedPatientHistoryRecord?.prescribedMedicineSummary
+            || `${selectedPatientHistoryRecord?.medicineName || "N/A"} x ${selectedPatientHistoryRecord?.medicineQuantity || 0}`;
+        const selectedPatientAssistiveSummary = selectedPatientHistoryRecord?.dispensedAssistiveSummary
+            || (selectedPatientAssistiveItems.length > 0
+                ? selectedPatientAssistiveItems.map((item) => `${item.itemName || "Assistive device"} x ${item.quantity || 0}`).join(", ")
+                : "");
         const selectedIntakePerDay = Number(selectedPatientHistoryRecord?.medicineIntakePerDay || 0);
         const selectedIntakeEveryHours = selectedIntakePerDay > 0 ? Math.max(1, Math.round(24 / selectedIntakePerDay)) : 0;
 
@@ -4275,6 +4859,10 @@ function UserDashboard() {
                             <div className="space-y-2 max-h-130 overflow-y-auto pr-1">
                                 {patientConsultationHistory.map((entry) => {
                                     const isActive = String(entry.id) === String(selectedPatientHistoryRecord?.id);
+                                    const entryMedicineSummary = entry.dispensedMedicineSummary
+                                        || entry.prescribedMedicineSummary
+                                        || `${entry.medicineName || "N/A"} x ${entry.medicineQuantity || 0}`;
+                                    const entryAssistiveSummary = entry.dispensedAssistiveSummary || "";
                                     return (
                                         <button
                                             key={`patient-history-${entry.id}`}
@@ -4286,7 +4874,10 @@ function UserDashboard() {
                                                     : "border-slate-200 bg-white hover:bg-slate-50"
                                             }`}
                                         >
-                                            <p className="text-sm font-bold text-slate-800">Medicine given: {entry.medicineName || "N/A"} x {entry.medicineQuantity || 0}</p>
+                                            <p className="text-sm font-bold text-slate-800">Medicine given: {entryMedicineSummary}</p>
+                                            {entryAssistiveSummary ? (
+                                                <p className="text-xs text-slate-600 mt-1">Assistive device: {entryAssistiveSummary}</p>
+                                            ) : null}
                                             <p className="text-xs text-slate-600 mt-1">{formatLongDate(entry.dateKey)} at {entry.timeSlot || "N/A"}</p>
                                             <p className="text-sm text-slate-700 mt-1 line-clamp-1">Diagnosis: {entry.diagnosis || "N/A"}</p>
                                         </button>
@@ -4304,12 +4895,32 @@ function UserDashboard() {
                                     <section className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
                                         <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Consultation Summary</h3>
                                         <p><span className="font-semibold text-slate-900">Diagnosis:</span> {selectedPatientHistoryRecord.diagnosis || "N/A"}</p>
-                                        <p><span className="font-semibold text-slate-900">Medicine given:</span> {selectedPatientHistoryRecord.medicineName || "N/A"}</p>
-                                        <p><span className="font-semibold text-slate-900">Quantity dispensed:</span> {selectedPatientHistoryRecord.medicineQuantity || 0}</p>
-                                        <p><span className="font-semibold text-slate-900">Intake frequency:</span> {selectedIntakePerDay > 0 ? `${selectedIntakePerDay}x a day` : "N/A"}</p>
-                                        <p><span className="font-semibold text-slate-900">Suggested interval:</span> {selectedIntakeEveryHours > 0 ? `Every ${selectedIntakeEveryHours} hour(s)` : "N/A"}</p>
-                                        {selectedPatientHistoryRecord.medicineIntakeInstruction ? (
-                                            <p><span className="font-semibold text-slate-900">Custom instruction:</span> {selectedPatientHistoryRecord.medicineIntakeInstruction}</p>
+                                        <p><span className="font-semibold text-slate-900">Medicines given:</span> {selectedPatientMedicineSummary}</p>
+                                        {selectedPatientMedicineItems.length > 0 ? (
+                                            <div className="space-y-1">
+                                                {selectedPatientMedicineItems.map((item, index) => {
+                                                    const itemIntakePerDay = Number(item.medicineIntakePerDay || 0);
+                                                    const itemEveryHours = itemIntakePerDay > 0 ? Math.max(1, Math.round(24 / itemIntakePerDay)) : 0;
+                                                    return (
+                                                        <p key={`patient-medicine-detail-${item.itemId || index}`}>
+                                                            <span className="font-semibold text-slate-900">Medicine {index + 1}:</span> {item.itemName || "Medicine"} x {item.quantity || 0}
+                                                            {itemIntakePerDay > 0 ? `, ${itemIntakePerDay}x/day` : ""}
+                                                            {itemEveryHours > 0 ? `, every ${itemEveryHours} hour(s)` : ""}
+                                                        </p>
+                                                    );
+                                                })}
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <p><span className="font-semibold text-slate-900">Intake frequency:</span> {selectedIntakePerDay > 0 ? `${selectedIntakePerDay}x a day` : "N/A"}</p>
+                                                <p><span className="font-semibold text-slate-900">Suggested interval:</span> {selectedIntakeEveryHours > 0 ? `Every ${selectedIntakeEveryHours} hour(s)` : "N/A"}</p>
+                                                {selectedPatientHistoryRecord.medicineIntakeInstruction ? (
+                                                    <p><span className="font-semibold text-slate-900">Custom instruction:</span> {selectedPatientHistoryRecord.medicineIntakeInstruction}</p>
+                                                ) : null}
+                                            </>
+                                        )}
+                                        {selectedPatientAssistiveSummary ? (
+                                            <p><span className="font-semibold text-slate-900">Assistive device given:</span> {selectedPatientAssistiveSummary}</p>
                                         ) : null}
                                         <p><span className="font-semibold text-slate-900">Patient note:</span> {selectedPatientHistoryRecord.note || "N/A"}</p>
                                     </section>

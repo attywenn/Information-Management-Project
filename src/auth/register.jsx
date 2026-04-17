@@ -12,16 +12,14 @@ const SECURITY_QUESTIONS = [
 const SEX_OPTIONS = ["Male", "Female", "Prefer not to say"];
 
 const GENDER_OPTIONS = [
-    "Cisgender Woman",
-    "Cisgender Man",
+    "Straight",
+    "Gay",
+    "Lesbian",
+    "Bisexual",
     "Transgender Woman",
     "Transgender Man",
     "Non-binary",
-    "Genderqueer",
-    "Agender",
-    "Intersex",
-    "Two-Spirit",
-    "Questioning",
+    "Queer",
     "Prefer not to say",
     "Other / Unknown (please specify)",
 ];

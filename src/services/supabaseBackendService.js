@@ -768,6 +768,73 @@ export async function completeConsultationRecord(payload) {
   return data;
 }
 
+export async function addConsultationDispensedItem(payload) {
+  const quantity = Number(payload.quantity || 0);
+  const intakePerDay = Math.max(1, Number(payload.medicineIntakePerDay || 1));
+  const intakeInstruction = String(payload.medicineIntakeInstruction || "").trim();
+  const intakeFrequency = intakePerDay === 1
+    ? "1x"
+    : intakePerDay === 2
+      ? "2x"
+      : intakePerDay === 3
+        ? "3x"
+        : "more_than_3x";
+
+  if (!payload.consultationId) {
+    throw new Error("Consultation ID is required for additional dispensed item.");
+  }
+
+  if (!payload.itemId) {
+    throw new Error("Inventory item is required.");
+  }
+
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    throw new Error("Quantity must be a positive whole number.");
+  }
+
+  if (intakePerDay > 3 && !intakeInstruction) {
+    throw new Error("Intake instruction is required for more than 3x/day.");
+  }
+
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+  if (authError || !authData.user?.id) {
+    throw new Error("Authenticated session was not found.");
+  }
+
+  const { error: consultationItemError } = await supabase
+    .from("consultation_items")
+    .insert({
+      consultation_id: payload.consultationId,
+      item_id: payload.itemId,
+      quantity,
+      medicine_intake_per_day: intakePerDay,
+      medicine_intake_instruction: intakeInstruction || null,
+      medicine_intake_frequency: intakeFrequency,
+      medicine_intake_more_than_3x_note: intakePerDay > 3 ? intakeInstruction : null,
+    });
+
+  if (consultationItemError) {
+    throw toBackendError(consultationItemError, "Unable to save additional prescribed item.");
+  }
+
+  const { error: inventoryMovementError } = await supabase
+    .from("inventory_movements")
+    .insert({
+      item_id: payload.itemId,
+      moved_by_user_id: authData.user.id,
+      movement_type: "dispense",
+      quantity,
+      consultation_id: payload.consultationId,
+      note: payload.movementNote || "Dispensed during consultation",
+    });
+
+  if (inventoryMovementError) {
+    throw toBackendError(inventoryMovementError, "Unable to update inventory for additional prescribed item.");
+  }
+
+  return true;
+}
+
 export async function fetchHealthWorkerDirectory(options = {}) {
   const { from, to } = normalizePagination(options);
 
@@ -1150,7 +1217,7 @@ export async function fetchConsultationFeed(options = {}) {
     consultationIds.length
       ? supabase
           .from("consultation_items")
-          .select("consultation_id, item_id, quantity, medicine_intake_per_day, medicine_intake_instruction, medicine_intake_frequency, medicine_intake_more_than_3x_note")
+          .select("consultation_id, item_id, quantity, medicine_intake_per_day, medicine_intake_instruction, medicine_intake_frequency, medicine_intake_more_than_3x_note, created_at")
           .in("consultation_id", consultationIds)
       : Promise.resolve({ data: [], error: null }),
     supabase
@@ -1174,7 +1241,7 @@ export async function fetchConsultationFeed(options = {}) {
   const appointmentById = new Map((appointmentRows || []).map((row) => [row.id, row]));
   const patientById = new Map((patientRows || []).map((row) => [row.user_id, row]));
   const profileById = new Map((profileRows || []).map((row) => [row.id, row]));
-  const itemNameById = new Map((inventoryRows || []).map((row) => [row.id, row]));
+  const inventoryItemById = new Map((inventoryRows || []).map((row) => [row.id, row]));
   const consultationItemsById = (itemRows || []).reduce((accumulator, row) => {
     const current = accumulator.get(row.consultation_id) || [];
     current.push(row);
@@ -1188,10 +1255,35 @@ export async function fetchConsultationFeed(options = {}) {
     const patient = patientById.get(row.patient_user_id) || {};
     const profile = profileById.get(row.patient_user_id) || {};
     const worker = workerById.get(row.health_worker_user_id) || {};
-    const consultationItems = consultationItemsById.get(row.id) || [];
-    const primaryItem = consultationItems[0] || {};
-    const itemName = primaryItem.item_id ? itemNameById.get(primaryItem.item_id)?.name || "" : "";
-    const fallbackIntakePerDay = primaryItem.medicine_intake_frequency === "1x"
+    const consultationItems = (consultationItemsById.get(row.id) || [])
+      .slice()
+      .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
+    const normalizedDispensedItems = consultationItems.map((item) => {
+      const inventoryItem = inventoryItemById.get(item.item_id) || {};
+      const fallbackIntakePerDay = item.medicine_intake_frequency === "1x"
+        ? 1
+        : item.medicine_intake_frequency === "2x"
+          ? 2
+          : item.medicine_intake_frequency === "3x"
+            ? 3
+            : item.medicine_intake_frequency === "more_than_3x"
+              ? 4
+              : 1;
+
+      return {
+        itemId: item.item_id || "",
+        itemName: inventoryItem.name || "",
+        itemCategory: inventoryItem.category || "medicine",
+        unit: inventoryItem.unit || "",
+        quantity: Number(item.quantity || 0),
+        medicineIntakePerDay: Number(item.medicine_intake_per_day || fallbackIntakePerDay || 1),
+        medicineIntakeInstruction: item.medicine_intake_instruction || item.medicine_intake_more_than_3x_note || "",
+      };
+    });
+    const medicineItems = normalizedDispensedItems.filter((item) => item.itemCategory === "medicine");
+    const assistiveItems = normalizedDispensedItems.filter((item) => item.itemCategory === "aid");
+    const primaryItem = medicineItems[0] || normalizedDispensedItems[0] || {};
+    const fallbackIntakePerDay = primaryItem.medicineIntakePerDay || (primaryItem.medicine_intake_frequency === "1x"
       ? 1
       : primaryItem.medicine_intake_frequency === "2x"
         ? 2
@@ -1199,7 +1291,13 @@ export async function fetchConsultationFeed(options = {}) {
           ? 3
           : primaryItem.medicine_intake_frequency === "more_than_3x"
             ? 4
-            : 1;
+            : 1);
+    const dispensedMedicineSummary = medicineItems.length > 0
+      ? medicineItems.map((item) => `${item.itemName || "Medicine"} x ${item.quantity || 0}`).join(", ")
+      : "";
+    const dispensedAssistiveSummary = assistiveItems.length > 0
+      ? assistiveItems.map((item) => `${item.itemName || "Assistive device"} x ${item.quantity || 0}`).join(", ")
+      : "";
 
     return {
       id: row.id,
@@ -1211,11 +1309,14 @@ export async function fetchConsultationFeed(options = {}) {
       dateKey: appointment.scheduled_date || "",
       timeSlot: appointment.time_slot || "",
       diagnosis: row.diagnosis || "",
-      medicineId: primaryItem.item_id || "",
-      medicineName: itemName || "",
+      medicineId: primaryItem.itemId || primaryItem.item_id || "",
+      medicineName: primaryItem.itemName || "",
       medicineQuantity: primaryItem.quantity || 0,
-      medicineIntakePerDay: Number(primaryItem.medicine_intake_per_day || fallbackIntakePerDay || 1),
-      medicineIntakeInstruction: primaryItem.medicine_intake_instruction || primaryItem.medicine_intake_more_than_3x_note || "",
+      medicineIntakePerDay: Number(primaryItem.medicineIntakePerDay || fallbackIntakePerDay || 1),
+      medicineIntakeInstruction: primaryItem.medicineIntakeInstruction || "",
+      dispensedItems: normalizedDispensedItems,
+      dispensedMedicineSummary,
+      dispensedAssistiveSummary,
       note: row.note || "",
       workerName: buildPersonName(worker) || "Health Worker",
       startedAt: row.started_at || "",
