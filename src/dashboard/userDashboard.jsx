@@ -6,11 +6,12 @@ import { useAuth } from "../context/useAuth.js";
 import { Bar } from "react-chartjs-2";
 import { Chart as ChartJS, Tooltip, Legend, CategoryScale, LinearScale, BarElement } from "chart.js";
 import { QRCodeSVG } from "qrcode.react";
-import jsQR from "jsqr";
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { faTriangleExclamation, faCalendarDays, faFileMedical, faStethoscope, faBox } from "@fortawesome/free-solid-svg-icons";
 import PatientAccountManagement from "../components/PatientAccountManagement.jsx";
 import HealthWorkerAccountManagement from "../components/HealthWorkerAccountManagement.jsx";
+import { supabase } from "../utils/supabase.js";
 import {
     addConsultationDispensedItem,
     bookPatientAppointment,
@@ -69,6 +70,8 @@ const STORAGE_KEYS = {
     inventory: "sanperfecto-inventory",
     accounts: "sanperfecto-accounts",
 };
+
+const DASHBOARD_COLLECTION_ROUTES = new Set(["/dashboard", "/schedules", "/history", "/consultation", "/inventory", "/inbox"]);
 
 const SETTINGS_STORAGE_PREFIX = "sanperfecto-settings";
 const MEDICATION_REMINDER_STORAGE_PREFIX = "sanperfecto-medication-reminder";
@@ -369,6 +372,26 @@ const splitAppointmentQrValue = (qrValue) => {
 };
 
 const normalizeAppointmentQrValue = (qrValue) => String(qrValue || "").trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+const extractAppointmentQrCandidates = (rawValue) => {
+    const rawText = String(rawValue || "").trim();
+    if (!rawText) {
+        return [];
+    }
+
+    const text = rawText.toUpperCase();
+    const candidates = [text];
+
+    const paPatternMatches = text.match(/PA\s*\d{4}\s*[-_ ]\s*[A-Z0-9]{4}|PA\s*\d{4}[A-Z0-9]{4}/g) || [];
+    const patientPatternMatches = text.match(/PATIENT\s*\d{6,}/g) || [];
+    candidates.push(...paPatternMatches, ...patientPatternMatches);
+
+    const normalizedCandidates = candidates
+        .map(normalizeAppointmentQrValue)
+        .filter(Boolean);
+
+    return Array.from(new Set(normalizedCandidates));
+};
 
 const getAppointmentLookupCandidates = (appointment) => {
     const qrValue = String(appointment?.qrValue || "").trim();
@@ -672,13 +695,136 @@ function UserDashboard() {
     const [consultationError, setConsultationError] = useState("");
     const [isQrScannerOpen, setIsQrScannerOpen] = useState(false);
     const [qrScannerError, setQrScannerError] = useState("");
-    const videoScannerRef = useRef(null);
-    const scannerStreamRef = useRef(null);
-    const scannerIntervalRef = useRef(null);
+    const qrScannerInstanceRef = useRef(null);
+    const qrScannerElementId = "consultation-qr-reader";
+    const qrScannerImageInputRef = useRef(null);
     const [proofCameraError, setProofCameraError] = useState("");
     const [isProofCameraOpen, setIsProofCameraOpen] = useState(false);
     const proofCameraVideoRef = useRef(null);
     const proofCameraStreamRef = useRef(null);
+    const proofCaptureInputRef = useRef(null);
+    const PROOF_IMAGE_MAX_BYTES = 300 * 1024;
+    const PROOF_IMAGE_ASPECT_RATIO = 4 / 3;
+
+    const loadImageFromDataUrl = (dataUrl) => new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error("Unable to load the selected proof photo."));
+        image.src = dataUrl;
+    });
+
+    const fileToDataUrl = (file) => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+        reader.onerror = () => reject(new Error("Unable to read the selected proof photo."));
+        reader.readAsDataURL(file);
+    });
+
+    const canvasToBlob = (canvas, type, quality) => new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+            if (!blob) {
+                reject(new Error("Unable to compress the selected proof photo."));
+                return;
+            }
+            resolve(blob);
+        }, type, quality);
+    });
+
+    const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+        reader.onerror = () => reject(new Error("Unable to finalize the selected proof photo."));
+        reader.readAsDataURL(blob);
+    });
+
+    const getCoverCropRect = (sourceWidth, sourceHeight, aspectRatio) => {
+        const sourceRatio = sourceWidth / sourceHeight;
+        if (sourceRatio > aspectRatio) {
+            const cropWidth = Math.round(sourceHeight * aspectRatio);
+            return {
+                cropX: Math.round((sourceWidth - cropWidth) / 2),
+                cropY: 0,
+                cropWidth,
+                cropHeight: sourceHeight,
+            };
+        }
+
+        const cropHeight = Math.round(sourceWidth / aspectRatio);
+        return {
+            cropX: 0,
+            cropY: Math.round((sourceHeight - cropHeight) / 2),
+            cropWidth: sourceWidth,
+            cropHeight,
+        };
+    };
+
+    const compressProofImageDataUrl = async (sourceDataUrl, fileNameBase = "consultation-proof") => {
+        const image = await loadImageFromDataUrl(sourceDataUrl);
+        const sourceWidth = image.naturalWidth || image.width;
+        const sourceHeight = image.naturalHeight || image.height;
+
+        if (!sourceWidth || !sourceHeight) {
+            throw new Error("The selected proof photo has an invalid size.");
+        }
+
+        const crop = getCoverCropRect(sourceWidth, sourceHeight, PROOF_IMAGE_ASPECT_RATIO);
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d", { alpha: false });
+        if (!context) {
+            throw new Error("Image compression is not supported in this browser.");
+        }
+
+        let targetWidth = Math.min(crop.cropWidth, 1280);
+        let targetHeight = Math.round(targetWidth / PROOF_IMAGE_ASPECT_RATIO);
+        const qualitySteps = [0.9, 0.82, 0.74, 0.66, 0.58, 0.5, 0.42];
+        let bestBlob = null;
+
+        for (let pass = 0; pass < 5; pass += 1) {
+            canvas.width = targetWidth;
+            canvas.height = targetHeight;
+            context.clearRect(0, 0, targetWidth, targetHeight);
+            context.drawImage(
+                image,
+                crop.cropX,
+                crop.cropY,
+                crop.cropWidth,
+                crop.cropHeight,
+                0,
+                0,
+                targetWidth,
+                targetHeight
+            );
+
+            for (const quality of qualitySteps) {
+                const blob = await canvasToBlob(canvas, "image/jpeg", quality);
+                if (!bestBlob || blob.size < bestBlob.size) {
+                    bestBlob = blob;
+                }
+                if (blob.size <= PROOF_IMAGE_MAX_BYTES) {
+                    const dataUrl = await blobToDataUrl(blob);
+                    return {
+                        dataUrl,
+                        fileName: `${fileNameBase}.jpg`,
+                        sizeBytes: blob.size,
+                    };
+                }
+            }
+
+            targetWidth = Math.max(640, Math.round(targetWidth * 0.85));
+            targetHeight = Math.round(targetWidth / PROOF_IMAGE_ASPECT_RATIO);
+        }
+
+        if (!bestBlob) {
+            throw new Error("Unable to compress the selected proof photo.");
+        }
+
+        const finalDataUrl = await blobToDataUrl(bestBlob);
+        return {
+            dataUrl: finalDataUrl,
+            fileName: `${fileNameBase}.jpg`,
+            sizeBytes: bestBlob.size,
+        };
+    };
     const [inventoryViewMode, setInventoryViewMode] = useState("all");
     const [inventoryMessage, setInventoryMessage] = useState("");
     const [inventoryError, setInventoryError] = useState("");
@@ -912,12 +1058,12 @@ function UserDashboard() {
         });
     }, [consultations, patientCode, user?.role]);
 
-    const shouldLoadStaffStats = user?.role === "admin" || user?.role === "health_worker";
+    const shouldLoadStaffStats = (user?.role === "admin" || user?.role === "health_worker") && path === "/dashboard";
     const statsQuery = useQuery({
-        queryKey: ["dashboard-stats", user?.role],
+        queryKey: ["dashboard-stats", user?.role, path],
         queryFn: fetchPatientAndHealthWorkerStats,
         enabled: Boolean(shouldLoadStaffStats),
-        staleTime: 60_000,
+        staleTime: 5 * 60_000,
     });
 
     useEffect(() => {
@@ -1104,7 +1250,7 @@ function UserDashboard() {
                         </div>
                         <div className="rounded-2xl border border-white/80 bg-white/90 p-3 sm:col-span-2">
                             <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Address</p>
-                            <p className="text-sm font-bold text-slate-800 mt-1 break-words">{profile.address || "N/A"}</p>
+                            <p className="text-sm font-bold text-slate-800 mt-1 wrap-break-word">{profile.address || "N/A"}</p>
                         </div>
                     </div>
                 ) : null}
@@ -1267,19 +1413,33 @@ function UserDashboard() {
         window.localStorage.setItem(STORAGE_KEYS.inboxMessages, JSON.stringify(inboxMessages));
     }, [inboxMessages]);
 
+    const dashboardCollectionsEnabled = Boolean(user?.role && DASHBOARD_COLLECTION_ROUTES.has(path));
     const dashboardCollectionsQuery = useQuery({
-        queryKey: ["dashboard-collections", user?.role],
-        enabled: Boolean(user?.role),
-        staleTime: 20_000,
-        refetchInterval: 30_000,
+        queryKey: ["dashboard-collections", user?.role, user?.id, path],
+        enabled: dashboardCollectionsEnabled,
+        staleTime: 5 * 60_000,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
         queryFn: async () => {
+            const isPatient = user?.role === "patient";
+            const patientPageSize = path === "/history" ? 100 : 25;
+            const shouldLoadAppointments = path === "/dashboard" || path === "/schedules" || path === "/consultation";
+            const shouldLoadConsultations = path === "/dashboard" || path === "/history" || path === "/consultation";
+            const shouldLoadInventory = user?.role !== "patient" && (path === "/consultation" || path === "/inventory");
+            const shouldLoadPatientDirectory = user?.role !== "patient" && (path === "/history" || path === "/consultation" || (user?.role === "health_worker" && path === "/dashboard"));
+            const shouldLoadInbox = isPatient && (path === "/dashboard" || path === "/inbox");
+
             const [appointmentRows, consultationRows, inboxRows, inventoryRows, patientRows] = await Promise.all([
-                fetchAppointmentFeed({ page: 1, pageSize: 100 }),
-                fetchConsultationFeed({ page: 1, pageSize: 100 }),
-                user?.role === "patient" ? fetchMyInboxMessages() : Promise.resolve([]),
-                user?.role === "patient" ? Promise.resolve([]) : fetchInventoryItems(),
-                user?.role === "admin" || user?.role === "health_worker"
-                    ? fetchPatientDirectory({ page: 1, pageSize: 100 })
+                shouldLoadAppointments
+                    ? fetchAppointmentFeed({ page: 1, pageSize: isPatient ? patientPageSize : 100, patientUserId: isPatient ? user?.id : null })
+                    : Promise.resolve([]),
+                shouldLoadConsultations
+                    ? fetchConsultationFeed({ page: 1, pageSize: isPatient ? patientPageSize : 100, patientUserId: isPatient ? user?.id : null })
+                    : Promise.resolve([]),
+                shouldLoadInbox ? fetchMyInboxMessages() : Promise.resolve([]),
+                shouldLoadInventory ? fetchInventoryItems({ activeOnly: path === "/consultation" }) : Promise.resolve([]),
+                shouldLoadPatientDirectory
+                    ? fetchPatientDirectory({ page: 1, pageSize: 100, summaryOnly: !(user?.role === "health_worker" && path === "/dashboard") })
                     : Promise.resolve([]),
             ]);
 
@@ -1322,6 +1482,33 @@ function UserDashboard() {
     }, [dashboardCollectionsQuery.data, dashboardCollectionsQuery.error, user?.role]);
 
     useEffect(() => {
+        if (!dashboardCollectionsEnabled) {
+            return;
+        }
+
+        const invalidateDashboardData = () => {
+            queryClient.invalidateQueries({ queryKey: ["dashboard-collections"] });
+            queryClient.invalidateQueries({ queryKey: ["dashboard-stats"] });
+            queryClient.invalidateQueries({ queryKey: ["admin-inbox"] });
+            queryClient.invalidateQueries({ queryKey: ["admin-health-workers"] });
+        };
+
+        const channel = supabase
+            .channel(`dashboard-refresh-${user?.role || "guest"}-${user?.id || "anon"}`)
+            .on("postgres_changes", { event: "*", schema: "public", table: "appointments" }, invalidateDashboardData)
+            .on("postgres_changes", { event: "*", schema: "public", table: "consultations" }, invalidateDashboardData)
+            .on("postgres_changes", { event: "*", schema: "public", table: "inventory_items" }, invalidateDashboardData)
+            .on("postgres_changes", { event: "*", schema: "public", table: "patient_profiles" }, invalidateDashboardData)
+            .on("postgres_changes", { event: "*", schema: "public", table: "health_worker_profiles" }, invalidateDashboardData)
+            .on("postgres_changes", { event: "*", schema: "public", table: "inbox_messages" }, invalidateDashboardData)
+            .subscribe();
+
+        return () => {
+            supabase.removeChannel(channel);
+        };
+    }, [dashboardCollectionsEnabled, queryClient, user?.id, user?.role]);
+
+    useEffect(() => {
         const timer = setInterval(() => {
             setCurrentDateTime(new Date());
         }, 1000);
@@ -1331,10 +1518,10 @@ function UserDashboard() {
     }, []);
 
     const adminWorkersQuery = useQuery({
-        queryKey: ["admin-health-workers"],
+        queryKey: ["admin-health-workers", path],
         queryFn: () => fetchHealthWorkerDirectory({ page: 1, pageSize: 100 }),
-        enabled: user?.role === "admin",
-        staleTime: 30_000,
+        enabled: user?.role === "admin" && (path === "/manage-accounts" || path === "/health-worker-accounts"),
+        staleTime: 5 * 60_000,
     });
 
     useEffect(() => {
@@ -1354,11 +1541,12 @@ function UserDashboard() {
     }, [adminWorkersQuery.data, adminWorkersQuery.error, user?.role]);
 
     const adminInboxQuery = useQuery({
-        queryKey: ["admin-inbox"],
+        queryKey: ["admin-inbox", path],
         queryFn: fetchMyInboxMessages,
-        enabled: user?.role === "admin",
-        staleTime: 20_000,
-        refetchInterval: 30_000,
+        enabled: user?.role === "admin" && (path === "/dashboard" || path === "/inbox"),
+        staleTime: 5 * 60_000,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
     });
 
     useEffect(() => {
@@ -1400,13 +1588,21 @@ function UserDashboard() {
             return false;
         }
 
-        const normalizedCode = normalizeAppointmentQrValue(code);
+        const normalizedCandidates = extractAppointmentQrCandidates(code);
+        if (normalizedCandidates.length === 0) {
+            setConsultationError("Unable to read a valid appointment code from the scanned QR.");
+            return false;
+        }
+
+        const resolvedScannedCode = normalizedCandidates[0];
         const matchedAppointment = appointments.find((appointment) =>
-            getAppointmentLookupCandidates(appointment).includes(normalizedCode)
+            getAppointmentLookupCandidates(appointment).some((candidate) => normalizedCandidates.includes(candidate))
         );
 
         if (!matchedAppointment) {
-            setConsultationError("This QR code is not linked to any appointment.");
+            setConsultationError(fromScanner
+                ? `Scanned code (${resolvedScannedCode}) is not linked to any appointment.`
+                : "This QR code is not linked to any appointment.");
             setConsultationTarget(null);
             setConsultationScannedPatientCode("");
             return false;
@@ -1414,7 +1610,7 @@ function UserDashboard() {
 
         const defaultMedicineId = inventoryItems.find((item) => item.category === "medicine" && item.quantity > 0)?.id || "";
 
-        setConsultationScanValue(code);
+        setConsultationScanValue(resolvedScannedCode);
         setConsultationScannedPatientCode(matchedAppointment.patientCode);
         setConsultationTarget(matchedAppointment);
         setConsultationStartedAt("");
@@ -1438,20 +1634,27 @@ function UserDashboard() {
         return true;
     };
 
-    const stopQrScanner = () => {
-        if (scannerIntervalRef.current) {
-            window.clearInterval(scannerIntervalRef.current);
-            scannerIntervalRef.current = null;
+    const stopQrScanner = async () => {
+        const instance = qrScannerInstanceRef.current;
+        if (!instance) {
+            return;
         }
 
-        if (scannerStreamRef.current) {
-            scannerStreamRef.current.getTracks().forEach((track) => track.stop());
-            scannerStreamRef.current = null;
+        try {
+            if (instance.isScanning) {
+                await instance.stop();
+            }
+        } catch {
+            // Ignore scanner stop errors; clear will still run.
         }
 
-        if (videoScannerRef.current) {
-            videoScannerRef.current.srcObject = null;
+        try {
+            await instance.clear();
+        } catch {
+            // Ignore cleanup errors.
         }
+
+        qrScannerInstanceRef.current = null;
     };
 
     const stopProofCamera = () => {
@@ -1467,11 +1670,19 @@ function UserDashboard() {
         setIsProofCameraOpen(false);
     };
 
+    const openProofCaptureInput = () => {
+        if (proofCaptureInputRef.current) {
+            proofCaptureInputRef.current.value = "";
+            proofCaptureInputRef.current.click();
+        }
+    };
+
     const openProofCamera = async () => {
         setProofCameraError("");
 
         if (!navigator.mediaDevices?.getUserMedia) {
-            setProofCameraError("Camera access is not available in this browser. Use Upload photo instead.");
+            setProofCameraError("Live preview camera is not available here. Use device camera capture below.");
+            openProofCaptureInput();
             return false;
         }
 
@@ -1483,8 +1694,9 @@ function UserDashboard() {
                 stream = await navigator.mediaDevices.getUserMedia({
                     video: {
                         facingMode: { ideal: "environment" },
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 },
+                        aspectRatio: { ideal: 4 / 3 },
+                        width: { ideal: 1024 },
+                        height: { ideal: 768 },
                     },
                     audio: false,
                 });
@@ -1503,19 +1715,19 @@ function UserDashboard() {
         } catch (error) {
             stopProofCamera();
             if (error?.name === "NotAllowedError" || error?.name === "SecurityError") {
-                setProofCameraError("Camera permission was denied. Allow camera access, then try again.");
+                setProofCameraError("Camera permission was denied. Allow camera access, or use device camera capture below.");
                 return false;
             }
             if (error?.name === "NotFoundError" || error?.name === "DevicesNotFoundError") {
-                setProofCameraError("No camera device was detected on this device.");
+                setProofCameraError("No camera device was detected. Use device camera capture below.");
                 return false;
             }
-            setProofCameraError("Unable to open the camera. You can use Upload photo instead.");
+            setProofCameraError("Unable to open live camera preview. Use device camera capture below.");
             return false;
         }
     };
 
-    const captureProofPhoto = () => {
+    const captureProofPhoto = async () => {
         const videoElement = proofCameraVideoRef.current;
         if (!videoElement || !isProofCameraOpen) {
             setProofCameraError("Camera preview is not ready yet. Please wait and try again.");
@@ -1529,144 +1741,168 @@ function UserDashboard() {
             return;
         }
 
-        const frameCanvas = document.createElement("canvas");
-        frameCanvas.width = frameWidth;
-        frameCanvas.height = frameHeight;
-        const frameContext = frameCanvas.getContext("2d");
-        if (!frameContext) {
-            setProofCameraError("Unable to capture photo from camera. Please try again.");
-            return;
+        try {
+            const frameCanvas = document.createElement("canvas");
+            const crop = getCoverCropRect(frameWidth, frameHeight, PROOF_IMAGE_ASPECT_RATIO);
+            const targetWidth = Math.min(crop.cropWidth, 1280);
+            const targetHeight = Math.round(targetWidth / PROOF_IMAGE_ASPECT_RATIO);
+            frameCanvas.width = targetWidth;
+            frameCanvas.height = targetHeight;
+
+            const frameContext = frameCanvas.getContext("2d", { alpha: false });
+            if (!frameContext) {
+                throw new Error("Unable to capture photo from camera. Please try again.");
+            }
+
+            frameContext.drawImage(
+                videoElement,
+                crop.cropX,
+                crop.cropY,
+                crop.cropWidth,
+                crop.cropHeight,
+                0,
+                0,
+                targetWidth,
+                targetHeight
+            );
+
+            const initialBlob = await canvasToBlob(frameCanvas, "image/jpeg", 0.9);
+            const compressed = initialBlob.size <= PROOF_IMAGE_MAX_BYTES
+                ? {
+                    dataUrl: await blobToDataUrl(initialBlob),
+                    fileName: `consultation-proof-${Date.now()}.jpg`,
+                    sizeBytes: initialBlob.size,
+                }
+                : await compressProofImageDataUrl(await blobToDataUrl(initialBlob), `consultation-proof-${Date.now()}`);
+
+            setConsultationForm((prev) => ({
+                ...prev,
+                proofImageDataUrl: compressed.dataUrl,
+                proofImageName: compressed.fileName,
+            }));
+            setProofCameraError("");
+            stopProofCamera();
+        } catch (error) {
+            setProofCameraError(error?.message || "Unable to compress the captured photo. Please try again.");
         }
-
-        frameContext.drawImage(videoElement, 0, 0, frameWidth, frameHeight);
-        const capturedPhotoDataUrl = frameCanvas.toDataURL("image/jpeg", 0.92);
-        const capturedPhotoName = `consultation-proof-${Date.now()}.jpg`;
-
-        setConsultationForm((prev) => ({
-            ...prev,
-            proofImageDataUrl: capturedPhotoDataUrl,
-            proofImageName: capturedPhotoName,
-        }));
-        setProofCameraError("");
-        stopProofCamera();
     };
 
     const closeQrScanner = () => {
-        stopQrScanner();
+        void stopQrScanner();
         setIsQrScannerOpen(false);
+    };
+
+    const triggerQrImageScan = () => {
+        if (!qrScannerImageInputRef.current) {
+            return;
+        }
+        qrScannerImageInputRef.current.value = "";
+        qrScannerImageInputRef.current.click();
+    };
+
+    const scanQrFromImageFile = async (file) => {
+        if (!file) {
+            return;
+        }
+
+        setQrScannerError("");
+
+        try {
+            await stopQrScanner();
+
+            const scanner = new Html5Qrcode(qrScannerElementId, {
+                formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+                verbose: false,
+            });
+            qrScannerInstanceRef.current = scanner;
+
+            const decodedText = await scanner.scanFile(file, true);
+            await stopQrScanner();
+            setIsQrScannerOpen(false);
+            verifyConsultationCodeValue(decodedText, { fromScanner: true });
+        } catch {
+            await stopQrScanner();
+            setQrScannerError("Unable to decode QR from this image. Try a clearer photo or use the live camera scanner.");
+        }
     };
 
     const openQrScanner = async () => {
         setQrScannerError("");
 
-        if (!navigator.mediaDevices?.getUserMedia) {
-            setQrScannerError("Camera access is not available in this browser. Please paste/scan into the text field instead.");
-            return;
-        }
-
         try {
-            stopQrScanner();
+            await stopQrScanner();
             setIsQrScannerOpen(true);
 
-            let stream;
+            await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+            const scanner = new Html5Qrcode(qrScannerElementId, {
+                formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+                verbose: false,
+            });
+            qrScannerInstanceRef.current = scanner;
+
+            const scannerConfig = {
+                fps: 10,
+                qrbox: { width: 240, height: 240 },
+                aspectRatio: 1.333,
+            };
+
+            const onScanSuccess = async (decodedText) => {
+                if (!decodedText) {
+                    return;
+                }
+                await stopQrScanner();
+                setIsQrScannerOpen(false);
+                verifyConsultationCodeValue(decodedText, { fromScanner: true });
+            };
+
+            const onScanFailure = () => {
+                // Keep scanning; no UI noise for normal frame misses.
+            };
+
             try {
-                stream = await navigator.mediaDevices.getUserMedia({
-                    video: {
-                        facingMode: { ideal: "environment" },
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 },
-                    },
-                    audio: false,
-                });
+                await scanner.start(
+                    { facingMode: "environment" },
+                    scannerConfig,
+                    onScanSuccess,
+                    onScanFailure
+                );
             } catch {
-                // Fallback to generic camera constraints for stricter browsers.
-                stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                const cameras = await Html5Qrcode.getCameras();
+                if (!cameras || cameras.length === 0) {
+                    throw new Error("NoCamera");
+                }
+
+                await scanner.start(
+                    cameras[0].id,
+                    scannerConfig,
+                    onScanSuccess,
+                    onScanFailure
+                );
             }
-
-            scannerStreamRef.current = stream;
-            if (videoScannerRef.current) {
-                videoScannerRef.current.srcObject = stream;
-                await videoScannerRef.current.play();
-            }
-
-            let detector = null;
-            if ("BarcodeDetector" in window) {
-                try {
-                    detector = new window.BarcodeDetector({ formats: ["qr_code"] });
-                } catch {
-                    detector = null;
-                }
-            }
-
-            let isReadingFrame = false;
-            scannerIntervalRef.current = window.setInterval(async () => {
-                if (!videoScannerRef.current) {
-                    return;
-                }
-
-                if (isReadingFrame) {
-                    return;
-                }
-
-                isReadingFrame = true;
-
-                try {
-                    let value = "";
-
-                    if (detector) {
-                        const codes = await detector.detect(videoScannerRef.current);
-                        value = codes?.[0]?.rawValue || "";
-                    }
-
-                    if (!value) {
-                        const videoElement = videoScannerRef.current;
-                        const frameWidth = videoElement.videoWidth;
-                        const frameHeight = videoElement.videoHeight;
-
-                        if (frameWidth > 0 && frameHeight > 0) {
-                            const frameCanvas = document.createElement("canvas");
-                            frameCanvas.width = frameWidth;
-                            frameCanvas.height = frameHeight;
-
-                            const frameContext = frameCanvas.getContext("2d", { willReadFrequently: true });
-                            if (frameContext) {
-                                frameContext.drawImage(videoElement, 0, 0, frameWidth, frameHeight);
-                                const frameData = frameContext.getImageData(0, 0, frameWidth, frameHeight);
-                                const decoded = jsQR(frameData.data, frameWidth, frameHeight, {
-                                    inversionAttempts: "attemptBoth",
-                                });
-                                value = decoded?.data || "";
-                            }
-                        }
-                    }
-
-                    if (value) {
-                        closeQrScanner();
-                        verifyConsultationCodeValue(value, { fromScanner: true });
-                    }
-                } catch {
-                    // Keep scanning silently if a frame read fails.
-                } finally {
-                    isReadingFrame = false;
-                }
-            }, 350);
         } catch (error) {
-            closeQrScanner();
-            if (error?.name === "NotAllowedError" || error?.name === "SecurityError") {
+            await stopQrScanner();
+            setIsQrScannerOpen(false);
+
+            if (error?.name === "NotAllowedError" || error?.name === "PermissionDeniedError" || error?.name === "SecurityError") {
                 setQrScannerError("Camera permission was denied. Allow camera access, then try again.");
                 return;
             }
-            if (error?.name === "NotFoundError" || error?.name === "DevicesNotFoundError") {
+            if (error?.name === "NotFoundError" || error?.name === "DevicesNotFoundError" || error?.message === "NoCamera") {
                 setQrScannerError("No camera device was detected on this device.");
                 return;
             }
-            setQrScannerError("Unable to access camera for QR scanning on this browser. You can still paste/scan into the text field.");
+            if (!window.isSecureContext) {
+                setQrScannerError("Camera scanning requires a secure page (HTTPS). Open the app on HTTPS or localhost, then try again.");
+                return;
+            }
+            setQrScannerError("Unable to access camera scanner on this browser. You can still paste the code manually.");
         }
     };
 
     useEffect(() => {
         return () => {
-            stopQrScanner();
+            void stopQrScanner();
             stopProofCamera();
         };
     }, []);
@@ -3831,21 +4067,26 @@ function UserDashboard() {
             setConsultationMessage("Consultation timer started. Complete the consultation after assessment.");
         };
 
-        const handleProofImageChange = (file) => {
+        const handleProofImageChange = async (file) => {
             if (!file) {
                 setConsultationForm((prev) => ({ ...prev, proofImageDataUrl: "", proofImageName: "" }));
                 return;
             }
 
-            const reader = new FileReader();
-            reader.onload = () => {
+            try {
+                const dataUrl = await fileToDataUrl(file);
+                const fileBaseName = String(file.name || "consultation-proof").replace(/\.[^.]+$/, "") || "consultation-proof";
+                const compressed = await compressProofImageDataUrl(dataUrl, fileBaseName);
+
                 setConsultationForm((prev) => ({
                     ...prev,
-                    proofImageDataUrl: typeof reader.result === "string" ? reader.result : "",
-                    proofImageName: file.name,
+                    proofImageDataUrl: compressed.dataUrl,
+                    proofImageName: compressed.fileName,
                 }));
-            };
-            reader.readAsDataURL(file);
+                setProofCameraError("");
+            } catch (error) {
+                setProofCameraError(error?.message || "Unable to process the selected proof photo.");
+            }
         };
 
         const updatePrescribedMedicineAt = (index, field, value) => {
@@ -4377,7 +4618,10 @@ function UserDashboard() {
                                                     type="button"
                                                     onClick={async () => {
                                                         setConsultationForm((prev) => ({ ...prev, proofImageMode: "take" }));
-                                                        await openProofCamera();
+                                                        const opened = await openProofCamera();
+                                                        if (!opened) {
+                                                            openProofCaptureInput();
+                                                        }
                                                     }}
                                                     className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${consultationForm.proofImageMode === "take" ? "bg-sky-600 text-white" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"}`}
                                                 >
@@ -4391,11 +4635,26 @@ function UserDashboard() {
                                                 </>
                                             ) : (
                                                 <div className="space-y-2">
+                                                    <input
+                                                        ref={proofCaptureInputRef}
+                                                        type="file"
+                                                        accept="image/*"
+                                                        capture="environment"
+                                                        onChange={(e) => handleProofImageChange(e.target.files?.[0] || null)}
+                                                        className="hidden"
+                                                    />
                                                     {proofCameraError && (
                                                         <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{proofCameraError}</p>
                                                     )}
+                                                    <button
+                                                        type="button"
+                                                        onClick={openProofCaptureInput}
+                                                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                                    >
+                                                        Use device camera capture
+                                                    </button>
                                                     <div className="rounded-xl border border-slate-200 bg-black overflow-hidden">
-                                                        <video ref={proofCameraVideoRef} className="w-full h-56 object-cover" playsInline muted />
+                                                        <video ref={proofCameraVideoRef} className="w-full aspect-4/3 object-cover" playsInline muted />
                                                     </div>
                                                     <div className="flex flex-wrap gap-2">
                                                         <button
@@ -4411,16 +4670,16 @@ function UserDashboard() {
                                                             onClick={openProofCamera}
                                                             className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                                                         >
-                                                            Reopen camera
+                                                            Reopen live camera
                                                         </button>
                                                     </div>
-                                                    <p className="text-xs text-slate-500">After capture, the photo is automatically attached as consultation proof.</p>
+                                                    <p className="text-xs text-slate-500">Use live preview capture on supported browsers, or device camera capture for broader mobile compatibility.</p>
                                                 </div>
                                             )}
                                             {consultationForm.proofImageDataUrl && (
                                                 <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
                                                     <p className="text-xs text-slate-500 mb-2">Selected: {consultationForm.proofImageName || "Captured image"}</p>
-                                                    <img src={consultationForm.proofImageDataUrl} alt="Consultation proof" className="h-40 w-full object-cover rounded-lg" />
+                                                    <img src={consultationForm.proofImageDataUrl} alt="Consultation proof" className="w-full aspect-4/3 object-cover rounded-lg" />
                                                 </div>
                                             )}
                                         </div>
@@ -4443,8 +4702,24 @@ function UserDashboard() {
                                 </div>
                                 <button type="button" onClick={closeQrScanner} className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-semibold text-slate-700 hover:bg-slate-50">Close</button>
                             </div>
-                            <div className="rounded-xl border border-slate-200 bg-black overflow-hidden">
-                                <video ref={videoScannerRef} className="w-full h-72 object-cover" playsInline muted />
+                            <input
+                                ref={qrScannerImageInputRef}
+                                type="file"
+                                accept="image/*"
+                                onChange={(e) => void scanQrFromImageFile(e.target.files?.[0] || null)}
+                                className="hidden"
+                            />
+                            <div className="flex items-center justify-end">
+                                <button
+                                    type="button"
+                                    onClick={triggerQrImageScan}
+                                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                    Scan QR from image
+                                </button>
+                            </div>
+                            <div className="rounded-xl border border-slate-200 bg-slate-100 overflow-hidden p-2">
+                                <div id={qrScannerElementId} className="w-full min-h-72 rounded-lg overflow-hidden" />
                             </div>
                         </div>
                     </div>
@@ -4789,12 +5064,14 @@ function UserDashboard() {
                                         <section className="rounded-xl border border-slate-200 bg-white p-4 space-y-2">
                                             <h3 className="text-xs font-bold uppercase tracking-wide text-slate-500">Consultation Proof Photo</h3>
                                             {selectedRecordProofImage ? (
-                                                <img
-                                                    src={selectedRecordProofImage}
-                                                    alt={`Consultation proof for ${selectedRecord.patientName || "patient"}`}
-                                                    className="w-full h-64 rounded-lg border border-slate-200 object-cover bg-slate-100"
-                                                    loading="lazy"
-                                                />
+                                                <div className="w-full aspect-4/3 overflow-hidden rounded-lg border border-slate-200 bg-slate-100">
+                                                    <img
+                                                        src={selectedRecordProofImage}
+                                                        alt={`Consultation proof for ${selectedRecord.patientName || "patient"}`}
+                                                        className="h-full w-full object-cover"
+                                                        loading="lazy"
+                                                    />
+                                                </div>
                                             ) : (
                                                 <p className="text-slate-600">No consultation proof photo was uploaded for this record.</p>
                                             )}
@@ -5029,9 +5306,9 @@ function UserDashboard() {
     };
 
     return (
-        <div className="flex h-screen overflow-hidden font-sans bg-slate-50">
+        <div className="dashboard-modern flex h-dvh overflow-hidden font-sans">
             <DashboardNavigation />
-            <main className="flex-1 overflow-y-auto p-4 sm:p-8">
+            <main className="dashboard-main flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
                 <div className="w-full max-w-7xl mx-auto">
                     {renderContent()}
                 </div>

@@ -936,10 +936,18 @@ export async function fetchPatientAndHealthWorkerStats() {
   };
 }
 
-export async function fetchInventoryItems() {
-  const { data: items, error: itemsError } = await supabase
+export async function fetchInventoryItems(options = {}) {
+  const { activeOnly = false } = options;
+
+  let itemQuery = supabase
     .from("inventory_items")
     .select("id, name, category, unit, is_active, created_at");
+
+  if (activeOnly) {
+    itemQuery = itemQuery.eq("is_active", true);
+  }
+
+  const { data: items, error: itemsError } = await itemQuery;
 
   if (itemsError) {
     throw toBackendError(itemsError, "Unable to load inventory items.");
@@ -1010,11 +1018,15 @@ const buildPersonName = ({ display_name: displayName, firstname, surname, userna
 };
 
 export async function fetchPatientDirectory(options = {}) {
+  const { summaryOnly = false } = options;
   const { from, to } = normalizePagination(options);
+  const patientSelect = summaryOnly
+    ? "user_id, patient_code, surname, firstname, middlename, dob, created_at, updated_at"
+    : "user_id, patient_code, surname, firstname, middlename, dob, sex, gender, contact_number, address_id, created_at, updated_at";
 
   const { data: patientRows, error: patientError } = await supabase
     .from("patient_profiles")
-    .select("user_id, patient_code, surname, firstname, middlename, dob, sex, gender, contact_number, address_id, created_at, updated_at")
+    .select(patientSelect)
     .order("created_at", { ascending: false })
     .range(from, to);
 
@@ -1022,8 +1034,36 @@ export async function fetchPatientDirectory(options = {}) {
     throw toBackendError(patientError, "Unable to load patient directory.");
   }
 
-  const userIds = (patientRows || []).map((row) => row.user_id).filter(Boolean);
-  const addressIds = (patientRows || []).map((row) => row.address_id).filter(Boolean);
+  const userIds = summaryOnly ? [] : (patientRows || []).map((row) => row.user_id).filter(Boolean);
+  const addressIds = summaryOnly ? [] : (patientRows || []).map((row) => row.address_id).filter(Boolean);
+
+  if (summaryOnly) {
+    return (patientRows || []).map((row) => ({
+      role: "patient",
+      id: row.user_id,
+      user_id: row.user_id,
+      userId: row.user_id,
+      username: "",
+      email: "",
+      displayName: `${row.firstname || ""} ${row.surname || ""}`.trim(),
+      avatarDataUrl: "",
+      surname: row.surname || "",
+      firstname: row.firstname || "",
+      middlename: row.middlename || "",
+      dob: row.dob || "",
+      contactNumber: "",
+      phone: "",
+      sex: "",
+      gender: "",
+      patientCode: row.patient_code || "",
+      patientId: row.patient_code || "",
+      addressId: null,
+      address: null,
+      fullAddress: "",
+      createdAt: row.created_at || "",
+      updatedAt: row.updated_at || "",
+    }));
+  }
 
   const [{ data: profileRows, error: profileError }, { data: addressRows, error: addressError }] = await Promise.all([
     userIds.length
@@ -1096,11 +1136,18 @@ export async function fetchPatientDirectory(options = {}) {
 }
 
 export async function fetchAppointmentFeed(options = {}) {
+  const { patientUserId = null } = options;
   const { from, to } = normalizePagination(options);
 
-  const { data: appointmentRows, error: appointmentError } = await supabase
+  let appointmentQuery = supabase
     .from("appointments")
-    .select("id, patient_user_id, booked_by_user_id, scheduled_date, time_slot, status, qr_value, other_symptom_text, created_at, updated_at")
+    .select("id, patient_user_id, booked_by_user_id, scheduled_date, time_slot, status, qr_value, other_symptom_text, created_at, updated_at");
+
+  if (patientUserId) {
+    appointmentQuery = appointmentQuery.eq("patient_user_id", patientUserId);
+  }
+
+  const { data: appointmentRows, error: appointmentError } = await appointmentQuery
     .order("created_at", { ascending: false })
     .range(from, to);
 
@@ -1180,11 +1227,18 @@ export async function fetchAppointmentFeed(options = {}) {
 }
 
 export async function fetchConsultationFeed(options = {}) {
+  const { patientUserId = null } = options;
   const { from, to } = normalizePagination(options);
 
-  const { data: consultationRows, error: consultationError } = await supabase
+  let consultationQuery = supabase
     .from("consultations")
-    .select("id, appointment_id, patient_user_id, health_worker_user_id, diagnosis, note, started_at, completed_at, duration_seconds, proof_image_url, created_at")
+    .select("id, appointment_id, patient_user_id, health_worker_user_id, diagnosis, note, started_at, completed_at, duration_seconds, proof_image_url, created_at");
+
+  if (patientUserId) {
+    consultationQuery = consultationQuery.eq("patient_user_id", patientUserId);
+  }
+
+  const { data: consultationRows, error: consultationError } = await consultationQuery
     .order("created_at", { ascending: false })
     .range(from, to);
 
