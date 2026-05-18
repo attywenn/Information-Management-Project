@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/useAuth.js";
-import { recoverPasswordWithSecurityAnswer, signInPortalAccount, signOutPortalAccount } from "../services/supabaseBackendService.js";
+import { recoverPasswordWithSecurityAnswer, signInPortalAccount, signOutPortalAccount, initiateOtpForCurrentSession, verifyOtpForCurrentSession } from "../services/supabaseBackendService.js";
 
 function Login({ setIsRegisteringState }) {
   const navigate = useNavigate();
@@ -20,6 +20,12 @@ function Login({ setIsRegisteringState }) {
   const [adminOtpMessage, setAdminOtpMessage] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [otpPending, setOtpPending] = useState(false);
+  const [otpCode, setOtpCode] = useState("");
+  const [otpError, setOtpError] = useState("");
+  const [otpMessage, setOtpMessage] = useState("");
+  const [tempSession, setTempSession] = useState(null);
+  const [tempProfile, setTempProfile] = useState(null);
   const [showForgotPassword, setShowForgotPassword] = useState(false);
   const [recoverIdentifier, setRecoverIdentifier] = useState("");
   const [recoverQuestion, setRecoverQuestion] = useState("");
@@ -73,16 +79,67 @@ function Login({ setIsRegisteringState }) {
         }
       }
 
-      login({
-        ...profile,
-        token: session.access_token,
-      });
-      navigate("/dashboard", { replace: true });
+      // Hold session and profile temporarily while OTP verification completes
+      setTempSession(session);
+      setTempProfile(profile);
+      setOtpPending(true);
+      setOtpError("");
+      setOtpMessage("Sending OTP...");
+
+      try {
+        await initiateOtpForCurrentSession();
+        setOtpMessage("OTP sent. Check your phone and enter the code.");
+      } catch (initErr) {
+        setOtpPending(false);
+        setTempSession(null);
+        setTempProfile(null);
+        await signOutPortalAccount();
+        throw initErr;
+      }
     } catch (submitError) {
       setError(submitError?.message || "Unable to sign in. Please try again.");
     } finally {
       setIsSubmitting(false);
     }
+  };
+
+  const handleVerifyOtp = async (e) => {
+    e.preventDefault();
+    setOtpError("");
+    setIsSubmitting(true);
+
+    try {
+      if (!otpCode) {
+        setOtpError("Please enter the OTP sent to your phone.");
+        return;
+      }
+
+      await verifyOtpForCurrentSession({ code: otpCode });
+
+      // success: finalize login
+      login({
+        ...tempProfile,
+        token: tempSession.access_token,
+      });
+      setOtpPending(false);
+      navigate("/dashboard", { replace: true });
+    } catch (err) {
+      setOtpError(err?.message || "OTP verification failed.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const cancelOtpFlow = async () => {
+    try {
+      await signOutPortalAccount();
+    } catch {}
+    setOtpPending(false);
+    setTempProfile(null);
+    setTempSession(null);
+    setOtpCode("");
+    setOtpError("");
+    setOtpMessage("");
   };
 
   const resetAdminStep = () => {
@@ -293,6 +350,37 @@ function Login({ setIsRegisteringState }) {
           {isSubmitting ? "Signing In..." : "Sign In"}
         </button>
       </form>
+
+      {otpPending && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4">
+          <div className="w-full max-w-md rounded-3xl bg-white shadow-2xl border border-slate-200 p-6">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-slate-900">Enter OTP</h3>
+              <button type="button" onClick={cancelOtpFlow} className="text-sm text-slate-600">Cancel</button>
+            </div>
+            <p className="text-sm text-slate-600 mt-2">{otpMessage || "A 6-digit code has been sent to your phone."}</p>
+            {otpError && <p className="text-sm text-red-600 mt-3">{otpError}</p>}
+            <form onSubmit={handleVerifyOtp} className="mt-4 space-y-3">
+              <input
+                type="text"
+                inputMode="numeric"
+                placeholder="Enter 6-digit OTP"
+                className="w-full p-3 border rounded-lg text-lg text-center"
+                value={otpCode}
+                onChange={(e) => setOtpCode(e.target.value)}
+              />
+              <div className="flex items-center gap-3">
+                <button type="submit" disabled={isSubmitting} className="flex-1 bg-brand-red text-white py-2 rounded-lg">
+                  {isSubmitting ? "Verifying..." : "Verify OTP"}
+                </button>
+                <button type="button" onClick={cancelOtpFlow} className="flex-1 border rounded-lg py-2">
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       <div className="mt-8 text-center text-sm text-slate-600">
         <button

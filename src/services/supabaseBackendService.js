@@ -840,7 +840,7 @@ export async function fetchHealthWorkerDirectory(options = {}) {
 
   const { data, error } = await supabase
     .from("health_worker_profiles")
-    .select("user_id, license_number, surname, firstname, middlename, dob, created_at")
+    .select("user_id, license_number, surname, firstname, middlename, dob, address_id, created_at, addresses (region, province, city, barangay, house_number, street, purok_subdivision)")
     .order("created_at", { ascending: false })
     .range(from, to);
 
@@ -854,32 +854,67 @@ export async function fetchHealthWorkerDirectory(options = {}) {
   }
 
   const workerIds = workerRows.map((row) => row.user_id);
-  const { data: profileRows, error: profileError } = await supabase
-    .from("profiles")
-    .select("id, username, email, created_at")
-    .in("id", workerIds);
+  const [{ data: profileRows, error: profileError }, { data: consultationRows, error: consultationError }] = await Promise.all([
+    supabase
+      .from("profiles")
+      .select("id, username, email, display_name, avatar_url, created_at")
+      .in("id", workerIds),
+    supabase
+      .from("consultations")
+      .select("id, health_worker_user_id")
+      .in("health_worker_user_id", workerIds),
+  ]);
 
   if (profileError) {
     throw toBackendError(profileError, "Unable to load health worker accounts.");
   }
 
+  if (consultationError) {
+    throw toBackendError(consultationError, "Unable to load health worker consultation counts.");
+  }
+
   const profilesById = new Map((profileRows || []).map((row) => [row.id, row]));
+  const consultationsByWorker = (consultationRows || []).reduce((accumulator, row) => {
+    const current = accumulator.get(row.health_worker_user_id) || 0;
+    accumulator.set(row.health_worker_user_id, current + 1);
+    return accumulator;
+  }, new Map());
+  const buildAddressLabel = (address) => {
+    if (!address || typeof address !== "object") {
+      return "";
+    }
+
+    const localParts = [address.house_number, address.street, address.purok_subdivision].filter(Boolean);
+    const hierarchy = [address.barangay, address.city, address.province, address.region].filter(Boolean);
+    return [...localParts, ...hierarchy].filter(Boolean).join(", ");
+  };
 
   return workerRows.map((row) => {
     const profile = profilesById.get(row.user_id);
+    const address = row.addresses || null;
+    const location = buildAddressLabel(address);
+    const consultationCount = consultationsByWorker.get(row.user_id) || 0;
     return {
       role: "health_worker",
       id: row.user_id,
       user_id: row.user_id,
       userId: row.user_id,
       username: profile?.username || "",
+      displayName: profile?.display_name || "",
       email: profile?.email || "",
       surname: row.surname || "",
       firstname: row.firstname || "",
       middlename: row.middlename || "",
       dob: row.dob || "",
-      workerId: row.license_number,
-      systemLicenseNumber: row.license_number,
+      workerId: row.license_number || "",
+      license_number: row.license_number || "",
+      licenseNumber: row.license_number || "",
+      systemLicenseNumber: row.license_number || "",
+      avatar_url: profile?.avatar_url || "",
+      avatarDataUrl: profile?.avatar_url || "",
+      address,
+      location: location || "",
+      consultationCount,
       createdAt: profile?.created_at || row.created_at || "",
     };
   });
@@ -1800,3 +1835,38 @@ export async function deletePatientAccountByAdmin(payload) {
     throw error instanceof Error ? error : new Error("Failed to delete patient account.");
   }
 }
+
+export async function initiateOtpForCurrentSession({ adminPhone = null, purpose = "auth" } = {}) {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  if (!token) throw new Error("No active session. Cannot initiate OTP.");
+
+  const { data, error } = await supabase.functions.invoke("auth-otp", {
+    body: { action: "initiate", purpose, adminPhone },
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (error) {
+    throw await toFunctionInvokeError(error, "Unable to initiate OTP.");
+  }
+
+  return data;
+}
+
+export async function verifyOtpForCurrentSession({ code, purpose = "auth" } = {}) {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  if (!token) throw new Error("No active session. Cannot verify OTP.");
+
+  const { data, error } = await supabase.functions.invoke("auth-otp", {
+    body: { action: "verify", code, purpose },
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (error) {
+    throw await toFunctionInvokeError(error, "Unable to verify OTP.");
+  }
+
+  return data;
+}
+

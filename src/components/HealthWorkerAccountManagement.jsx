@@ -32,7 +32,7 @@ export default function HealthWorkerAccountManagement() {
   const renderAvatar = (url, name, size = "h-8 w-8") => {
     const avatarUrl = getAvatarUrl({ avatar_url: url });
     return (
-      <div className={`${size} rounded-full bg-gray-200 flex items-center justify-center flex-shrink-0 overflow-hidden`}>
+      <div className={`${size} rounded-full bg-gray-200 flex items-center justify-center shrink-0 overflow-hidden`}>
         {avatarUrl ? (
           <img src={avatarUrl} alt={name} className="h-full w-full object-cover" />
         ) : (
@@ -107,6 +107,8 @@ export default function HealthWorkerAccountManagement() {
     return (
       (worker.firstname && worker.firstname.toLowerCase().includes(searchLower)) ||
       (worker.surname && worker.surname.toLowerCase().includes(searchLower)) ||
+      (worker.license_number && worker.license_number.toLowerCase().includes(searchLower)) ||
+      (worker.location && worker.location.toLowerCase().includes(searchLower)) ||
       (worker.phone && worker.phone.includes(searchLower))
     );
   });
@@ -150,13 +152,14 @@ export default function HealthWorkerAccountManagement() {
                           : "bg-gray-100 hover:bg-gray-200"
                       }`}
                     >
-                      {renderAvatar(worker.avatarDataUrl, formatHealthWorkerName(worker), "h-10 w-10")}
+                      {renderAvatar(worker.avatarDataUrl || worker.avatar_url, formatHealthWorkerName(worker), "h-10 w-10")}
                       <div className="flex-1 min-w-0">
                         <div className="font-medium text-sm truncate">
                           {formatHealthWorkerName(worker)}
                         </div>
                         <div className="text-xs opacity-75 truncate">
-                          {worker.specialization || "General"} {worker.phone && `• ${worker.phone}`}
+                          {worker.license_number ? `ID: ${worker.license_number}` : "Health worker"}
+                          {worker.location ? ` • ${worker.location}` : ""}
                         </div>
                       </div>
                     </button>
@@ -181,9 +184,6 @@ export default function HealthWorkerAccountManagement() {
                       {workerDetail?.surname}, {workerDetail?.firstname}
                       {workerDetail?.middlename && ` ${workerDetail?.middlename}`}
                     </p>
-                    <p className="text-sm text-gray-500 mt-1">
-                      {workerDetail?.specialization || "General"}
-                    </p>
                   </div>
                 </div>
 
@@ -197,15 +197,11 @@ export default function HealthWorkerAccountManagement() {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-600">Phone</label>
-                    <p className="text-gray-800">{workerDetail.phone}</p>
+                    <p className="text-gray-800">{workerDetail.phone || workerDetail.email || "N/A"}</p>
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-600">Specialization</label>
-                    <p className="text-gray-800">{workerDetail.specialization || "N/A"}</p>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-600">License Number</label>
-                    <p className="text-gray-800">{workerDetail.license_number || "N/A"}</p>
+                    <label className="block text-sm font-medium text-gray-600">Health Worker ID</label>
+                    <p className="text-gray-800">{workerDetail.license_number || workerDetail.workerId || "N/A"}</p>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-600">Location</label>
@@ -272,20 +268,16 @@ export default function HealthWorkerAccountManagement() {
 
               {/* Performance Stats */}
               <div className="bg-white rounded-lg shadow p-6">
-                <h3 className="text-lg font-semibold text-gray-800 mb-4">Performance Stats</h3>
+                <h3 className="text-lg font-semibold text-gray-800 mb-4">Consultation Summary</h3>
 
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 gap-4">
                   <div className="text-center">
-                    <p className="text-2xl font-bold text-blue-600">—</p>
+                    <p className="text-2xl font-bold text-blue-600">
+                      {typeof workerDetail.consultationCount === "number"
+                        ? workerDetail.consultationCount
+                        : consultations.length}
+                    </p>
                     <p className="text-xs text-gray-600 mt-1">Consultations</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-2xl font-bold text-green-600">—</p>
-                    <p className="text-xs text-gray-600 mt-1">Avg Rating</p>
-                  </div>
-                  <div className="text-center">
-                    <p className="text-2xl font-bold text-purple-600">—</p>
-                    <p className="text-xs text-gray-600 mt-1">Response Time</p>
                   </div>
                 </div>
               </div>

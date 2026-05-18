@@ -1,4 +1,11 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { createClient } from "npm:@supabase/supabase-js@^2.38.4";
+
+declare const Deno: {
+  env: {
+    get(name: string): string | undefined;
+  };
+  serve(handler: (req: Request) => Response | Promise<Response>): void;
+};
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -38,7 +45,7 @@ const buildUsernameBase = (email: string) => {
 };
 
 const generateUniqueInternalUsername = async (
-  adminClient: ReturnType<typeof createClient>,
+  adminClient: any,
   email: string,
 ) => {
   const base = buildUsernameBase(email);
@@ -63,7 +70,7 @@ const generateUniqueInternalUsername = async (
   return `u_${base}_${crypto.randomUUID().replace(/-/g, "")}`;
 };
 
-Deno.serve(async (req) => {
+Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }

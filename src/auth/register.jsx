@@ -9,20 +9,7 @@ const SECURITY_QUESTIONS = [
     "Your childhood nickname",
 ];
 
-const SEX_OPTIONS = ["Male", "Female", "Prefer not to say"];
-
-const GENDER_OPTIONS = [
-    "Straight",
-    "Gay",
-    "Lesbian",
-    "Bisexual",
-    "Transgender Woman",
-    "Transgender Man",
-    "Non-binary",
-    "Queer",
-    "Prefer not to say",
-    "Other / Unknown (please specify)",
-];
+const SEX_OPTIONS = ["Male", "Female", "Others"];
 
 const KEYBOARD_SPECIAL_CHAR_PATTERN = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]/;
 const KEYBOARD_ALLOWED_PATTERN = /^[A-Za-z0-9!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]+$/;
@@ -68,9 +55,8 @@ function Register({ setIsRegisteringState }) {
     const [firstname, setFirstname] = useState("");
     const [middlename, setMiddlename] = useState("");
     const [dob, setDob] = useState("");
-    const [sex, setSex] = useState(SEX_OPTIONS[2]);
-    const [gender, setGender] = useState(GENDER_OPTIONS[10]);
-    const [genderOther, setGenderOther] = useState("");
+    const [sex, setSex] = useState(SEX_OPTIONS[0]);
+    const [sexOther, setSexOther] = useState("");
     const [houseNumber, setHouseNumber] = useState("");
     const [street, setStreet] = useState("");
     const [purokSubdivision, setPurokSubdivision] = useState("");
@@ -127,17 +113,15 @@ function Register({ setIsRegisteringState }) {
             return;
         }
 
-        if (gender === "Other / Unknown (please specify)" && !genderOther.trim()) {
-            setError("Please specify your gender when selecting Other / Unknown.");
+        if (sex === "Others" && !sexOther.trim()) {
+            setError("Please specify sex when selecting Others.");
             return;
         }
 
         setIsSubmitting(true);
 
         try {
-            const resolvedGender = gender === "Other / Unknown (please specify)"
-                ? genderOther.trim()
-                : gender;
+            const resolvedSex = sex === "Others" ? `Others: ${sexOther.trim()}` : sex;
 
             await registerPatientAccount({
                 email,
@@ -146,8 +130,7 @@ function Register({ setIsRegisteringState }) {
                 firstname,
                 middlename,
                 dob,
-                sex,
-                gender: resolvedGender,
+                sex: resolvedSex,
                 houseNumber,
                 street,
                 purokSubdivision,
@@ -176,9 +159,8 @@ function Register({ setIsRegisteringState }) {
             setFirstname("");
             setMiddlename("");
             setDob("");
-            setSex(SEX_OPTIONS[2]);
-            setGender(GENDER_OPTIONS[10]);
-            setGenderOther("");
+            setSex(SEX_OPTIONS[0]);
+            setSexOther("");
             setHouseNumber("");
             setStreet("");
             setPurokSubdivision("");
@@ -270,46 +252,31 @@ function Register({ setIsRegisteringState }) {
                         </div>
                     </div>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                            <label className={labelClass} htmlFor="reg-sex">Sex</label>
-                            <select
-                                id="reg-sex"
-                                className={inputClass}
-                                value={sex}
-                                onChange={(e) => setSex(e.target.value)}
-                                required
-                            >
-                                {SEX_OPTIONS.map((option) => (
-                                    <option key={option} value={option}>{option}</option>
-                                ))}
-                            </select>
-                        </div>
-                        <div>
-                            <label className={labelClass} htmlFor="reg-gender">Gender</label>
-                            <select
-                                id="reg-gender"
-                                className={inputClass}
-                                value={gender}
-                                onChange={(e) => setGender(e.target.value)}
-                                required
-                            >
-                                {GENDER_OPTIONS.map((option) => (
-                                    <option key={option} value={option}>{option}</option>
-                                ))}
-                            </select>
-                        </div>
+                    <div>
+                        <label className={labelClass} htmlFor="reg-sex">Sex</label>
+                        <select
+                            id="reg-sex"
+                            className={inputClass}
+                            value={sex}
+                            onChange={(e) => setSex(e.target.value)}
+                            required
+                        >
+                            {SEX_OPTIONS.map((option) => (
+                                <option key={option} value={option}>{option}</option>
+                            ))}
+                        </select>
                     </div>
 
-                    {gender === "Other / Unknown (please specify)" && (
+                    {sex === "Others" && (
                         <div>
-                            <label className={labelClass} htmlFor="reg-gender-other">Please specify gender</label>
+                            <label className={labelClass} htmlFor="reg-sex-other">Please specify</label>
                             <input
-                                id="reg-gender-other"
+                                id="reg-sex-other"
                                 type="text"
                                 className={inputClass}
-                                value={genderOther}
-                                onChange={(e) => setGenderOther(e.target.value)}
+                                placeholder="Please specify..."
+                                value={sexOther}
+                                onChange={(e) => setSexOther(e.target.value)}
                                 required
                             />
                         </div>

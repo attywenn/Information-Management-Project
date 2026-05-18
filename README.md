@@ -53,7 +53,10 @@ supabase db push
 supabase secrets set SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
 supabase secrets set SUPABASE_ANON_KEY=YOUR_ANON_KEY
 supabase secrets set SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
+supabase secrets set SMS_API_KEY=YOUR_SMS_API_KEY
 supabase functions deploy create-health-worker-account
+supabase functions deploy auth-otp
+supabase functions deploy admin-cleanup-accounts
 ```
 
 ## Included Backend Features
@@ -62,5 +65,6 @@ supabase functions deploy create-health-worker-account
 - Supabase Auth with role-aware profile sync trigger (`auth.users` -> app tables)
 - JWT-aware role helpers and RLS policies per table
 - RPCs for login identifier lookup, booking, consultation completion, inbox creation
+- SMS OTP login flow for all roles via Supabase Edge Function and sms mobile API
 - Inventory movement model with balance trigger and stock validation
 - Analytics views for attendance and top diagnosis by age group
