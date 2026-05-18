@@ -23,7 +23,8 @@ function Contact() {
               <div className="text-2xl mt-1"><img src={Pin} alt="Location Pin" className="size-8" /></div>
               <div>
                 <h3 className="font-semibold text-slate-900">Address</h3>
-                <p className="text-slate-600">123 Perfecto St., Barangay San Perfecto<br/>City of San Juan, Metro Manila</p>
+                <p className="text-slate-600">San Perfecto St., Barangay San Perfecto<br/>City of San Juan, Metro Manila</p>
+                <p className="text-slate-600"><span className="font-semibold">Coordinates: </span>14.602968, 121.021655</p>
               </div>
             </div>
             
@@ -39,7 +40,7 @@ function Contact() {
               <div className="text-2xl mt-1"><img src={Email} alt="Location Pin" className="size-8" /></div>
               <div>
                 <h3 className="font-semibold text-slate-900">Email</h3>
-                <p className="text-brand-red font-medium">brgysanperfecto@sanjuan.gov.ph</p>
+                <p className="text-brand-red font-medium">sample_email@sanjuan.gov.ph</p>
               </div>
             </div>
           </div>

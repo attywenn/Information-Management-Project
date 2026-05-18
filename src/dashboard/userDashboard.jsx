@@ -850,6 +850,7 @@ function UserDashboard() {
     const [currentDateTime, setCurrentDateTime] = useState(() => new Date());
     const [medicationReminderHasStarted, setMedicationReminderHasStarted] = useState(false);
     const [medicationReminderNextIntakeAt, setMedicationReminderNextIntakeAt] = useState("");
+    const [showAllPrescriptions, setShowAllPrescriptions] = useState(false);
     const visibleInboxMessages = useMemo(() => getVisibleInboxMessages(inboxMessages, user), [inboxMessages, user]);
     const scheduleByDate = useMemo(() => buildAppointmentScheduleMap(appointments), [appointments]);
     const visibleAdminInboxMessages = useMemo(() => {
@@ -920,12 +921,68 @@ function UserDashboard() {
             intakePerDay,
         };
     }, [consultations, user]);
+    const patientPrescriptionContext = useMemo(() => {
+        if (user?.role !== "patient") {
+            return { latestPrescription: null, recentPrescriptions: [], hasMultipleRecent: false };
+        }
+
+        const currentPatientCode = user?.patientCode || buildPatientCode(user?.username || "");
+        const prescriptions = consultations
+            .filter((entry) => entry.patientCode === currentPatientCode)
+            .map((entry) => {
+                const rawTime = new Date(entry.completedAt || entry.createdAt || 0).getTime();
+                const sortTime = Number.isNaN(rawTime) ? 0 : rawTime;
+                const dispensedItems = Array.isArray(entry.dispensedItems) ? entry.dispensedItems : [];
+                const medicineItems = dispensedItems
+                    .filter((item) => item.itemCategory === "medicine")
+                    .map((item) => ({
+                        name: item.itemName || entry.medicineName || "Medicine",
+                        quantity: Number(item.quantity || entry.medicineQuantity || 0),
+                        intakePerDay: Number(item.medicineIntakePerDay || entry.medicineIntakePerDay || 0),
+                        instruction: item.medicineIntakeInstruction || entry.medicineIntakeInstruction || "",
+                    }));
+
+                if (medicineItems.length === 0 && (entry.medicineName || entry.medicineId)) {
+                    medicineItems.push({
+                        name: entry.medicineName || "Medicine",
+                        quantity: Number(entry.medicineQuantity || 0),
+                        intakePerDay: Number(entry.medicineIntakePerDay || 0),
+                        instruction: entry.medicineIntakeInstruction || "",
+                    });
+                }
+
+                return {
+                    ...entry,
+                    sortTime,
+                    medicineItems,
+                };
+            })
+            .filter((entry) => entry.medicineItems.length > 0)
+            .sort((a, b) => b.sortTime - a.sortTime);
+
+        const latestPrescription = prescriptions[0] || null;
+        const sixMonthsAgo = new Date();
+        sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+        const recentPrescriptions = prescriptions.filter((entry) => entry.sortTime >= sixMonthsAgo.getTime());
+
+        return {
+            latestPrescription,
+            recentPrescriptions,
+            hasMultipleRecent: recentPrescriptions.length >= 2,
+        };
+    }, [consultations, user]);
     const medicationReminderStorageKey = useMemo(() => {
         if (user?.role !== "patient" || !patientMedicationReminderContext.latestMedication) {
             return "";
         }
         return getMedicationReminderStorageKey(user, patientMedicationReminderContext.latestMedication);
     }, [patientMedicationReminderContext.latestMedication, user]);
+
+    useEffect(() => {
+        if (!patientPrescriptionContext.hasMultipleRecent) {
+            setShowAllPrescriptions(false);
+        }
+    }, [patientPrescriptionContext.hasMultipleRecent]);
 
     useEffect(() => {
         if (!medicationReminderStorageKey) {
@@ -2375,47 +2432,24 @@ function UserDashboard() {
             .sort((a, b) => a.slotStartAt - b.slotStartAt)[0];
 
         const recentInbox = visibleInboxMessages.slice(0, 3);
-        const latestMedication = patientMedicationReminderContext.latestMedication;
-        const intakePerDay = patientMedicationReminderContext.intakePerDay;
-        const hasMedicationReminder = Boolean(latestMedication && intakePerDay > 0);
-        const intakeCycleMinutes = intakePerDay > 0 ? Math.max(1, Math.round((24 * 60) / intakePerDay)) : 0;
-        const intakeCycleMs = intakeCycleMinutes * 60 * 1000;
-        const nextIntakeTimestampMs = Date.parse(medicationReminderNextIntakeAt || "");
-        const hasStartedIntake = medicationReminderHasStarted;
-
-        let nextIntakeAt = null;
-        let remainingCycleMinutes = 0;
-        let intakeProgressPercent = 0;
-
-        if (hasMedicationReminder && hasStartedIntake && intakeCycleMs > 0 && Number.isFinite(nextIntakeTimestampMs)) {
-            const nowMs = currentDateTime.getTime();
-            const remainingMs = Math.max(0, nextIntakeTimestampMs - nowMs);
-            const elapsedInCurrentCycleMs = Math.max(0, intakeCycleMs - remainingMs);
-
-            nextIntakeAt = new Date(nextIntakeTimestampMs);
-            remainingCycleMinutes = Math.max(0, Math.ceil(remainingMs / (60 * 1000)));
-            intakeProgressPercent = Math.min(100, Math.round((elapsedInCurrentCycleMs / intakeCycleMs) * 100));
-        }
-
-        const reminderHours = Math.floor(remainingCycleMinutes / 60);
-        const reminderMinutes = remainingCycleMinutes % 60;
-        const intakeFrequencyLabel = intakePerDay > 0
-            ? `${intakePerDay}x/day`
-            : "";
-        const medicineLabel = latestMedication?.medicineName || "your prescribed medicine";
-        const nextIntakeClockLabel = nextIntakeAt
-            ? nextIntakeAt.toLocaleTimeString("en-PH", { hour: "numeric", minute: "2-digit" })
-            : "";
-        const handleStartTakingNow = () => {
-            if (intakeCycleMs <= 0) {
-                return;
-            }
-
-            const startedAtMs = Date.now();
-            const nextIntakeMs = startedAtMs + intakeCycleMs;
-            setMedicationReminderHasStarted(true);
-            setMedicationReminderNextIntakeAt(new Date(nextIntakeMs).toISOString());
+        const latestPrescription = patientPrescriptionContext.latestPrescription;
+        const recentPrescriptions = patientPrescriptionContext.recentPrescriptions;
+        const hasMultipleRecentPrescriptions = patientPrescriptionContext.hasMultipleRecent;
+        const latestPrescriptionMedicines = latestPrescription?.medicineItems || [];
+        const hasLatestPrescription = latestPrescriptionMedicines.length > 0;
+        const resolvePrescriptionDateLabel = (entry) => {
+            if (!entry) return "";
+            if (entry.dateKey) return formatLongDate(entry.dateKey);
+            const timestamp = entry.completedAt || entry.createdAt;
+            if (!timestamp) return "N/A";
+            const parsedDate = new Date(timestamp);
+            if (Number.isNaN(parsedDate.getTime())) return "N/A";
+            return parsedDate.toLocaleDateString("en-PH", { year: "numeric", month: "long", day: "numeric" });
         };
+        const latestPrescriptionDateLabel = resolvePrescriptionDateLabel(latestPrescription);
+        const otherRecentPrescriptions = hasMultipleRecentPrescriptions
+            ? recentPrescriptions.filter((entry) => entry.id !== latestPrescription?.id)
+            : [];
 
         return (
             <div className="space-y-6">
@@ -2469,50 +2503,61 @@ function UserDashboard() {
                     </div>
 
                     <div className="bg-linear-to-br from-red-600 to-red-700 p-6 rounded-2xl shadow-sm text-white xl:col-span-2">
-                        <h3 className="font-bold text-lg">Medicine Intake Reminder</h3>
-                        {hasMedicationReminder ? (
+                        <div className="flex items-start justify-between gap-3">
+                            <h3 className="font-bold text-lg">E-Prescription</h3>
+                            {hasMultipleRecentPrescriptions && (
+                                <button
+                                    type="button"
+                                    onClick={() => setShowAllPrescriptions((previous) => !previous)}
+                                    className="rounded-lg bg-white/15 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/25 transition-all"
+                                >
+                                    {showAllPrescriptions ? "Hide all" : "Show all"}
+                                </button>
+                            )}
+                        </div>
+                        {hasLatestPrescription ? (
                             <>
-                                <p className="text-sm text-red-100 mt-2 leading-relaxed">
-                                    {`Take ${medicineLabel} ${intakeFrequencyLabel}.`}
-                                </p>
-                                {!hasStartedIntake ? (
-                                    <div className="mt-4 space-y-3">
-                                        <p className="text-xs text-red-100">
-                                            Tap Start Taking Now to begin your intake countdown.
-                                        </p>
-                                        <button
-                                            type="button"
-                                            onClick={handleStartTakingNow}
-                                            className="w-full rounded-lg bg-white text-red-700 font-semibold text-sm px-3 py-2 hover:bg-red-50 transition-all"
-                                        >
-                                            Start Taking Now
-                                        </button>
-                                    </div>
-                                ) : (
-                                    <div className="mt-4">
-                                        <div className="flex items-center justify-between text-xs text-red-100 mb-1">
-                                            <span>Frequency: {intakeFrequencyLabel}</span>
-                                            <span>{latestMedication.medicineQuantity} dispensed</span>
-                                        </div>
-                                        <div className="h-2 rounded-full bg-red-400/60 overflow-hidden">
-                                            <div className="h-full bg-white" style={{ width: `${intakeProgressPercent}%` }} />
-                                        </div>
-                                        <p className="text-xs text-red-100 mt-2">
-                                            Next intake: {reminderHours} hour{reminderHours === 1 ? "" : "s"} {reminderMinutes} minute{reminderMinutes === 1 ? "" : "s"}
-                                        </p>
-                                        <p className="text-xs text-red-100 mt-1">
-                                            <span className="font-bold">Next schedule time:</span> {nextIntakeClockLabel || "N/A"}
-                                        </p>
-                                    </div>
-                                )}
-                                {latestMedication.medicineIntakeInstruction ? (
-                                    <p className="text-xs text-red-100 mt-3">
-                                        {latestMedication.medicineIntakeInstruction}
-                                    </p>
-                                ) : null}
+                                <p className="text-xs text-red-100 mt-1">Last checkup: {latestPrescriptionDateLabel || "N/A"}</p>
+                                <div className="mt-3 space-y-2">
+                                    {latestPrescriptionMedicines.map((medicine, index) => {
+                                        const intakeLabel = medicine.intakePerDay > 0 ? `${medicine.intakePerDay}x/day` : "As instructed";
+                                        return (
+                                            <div key={`latest-prescription-${medicine.name}-${index}`} className="rounded-lg bg-white/15 p-3">
+                                                <p className="text-sm font-semibold text-white">{medicine.name || "Medicine"}</p>
+                                                <p className="text-xs text-red-100">Intake: {intakeLabel}</p>
+                                                {medicine.instruction ? (
+                                                    <p className="text-xs text-red-100 mt-1">{medicine.instruction}</p>
+                                                ) : null}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
                             </>
                         ) : (
-                            <div className="mt-4 h-24" />
+                            <p className="text-sm text-red-100 mt-3">No e-prescription recorded yet.</p>
+                        )}
+                        {hasMultipleRecentPrescriptions && showAllPrescriptions && (
+                            <div className="mt-4 space-y-2">
+                                <p className="text-xs font-semibold uppercase tracking-wide text-red-100">Other prescriptions in the last 6 months</p>
+                                {otherRecentPrescriptions.length === 0 ? (
+                                    <p className="text-xs text-red-100">No other prescriptions recorded.</p>
+                                ) : (
+                                    otherRecentPrescriptions.map((entry, entryIndex) => {
+                                        const summary = (entry.medicineItems || [])
+                                            .map((medicine) => {
+                                                const intakeLabel = medicine.intakePerDay > 0 ? `${medicine.intakePerDay}x/day` : "As instructed";
+                                                return `${medicine.name || "Medicine"} (${intakeLabel})`;
+                                            })
+                                            .join(", ");
+                                        return (
+                                            <div key={`recent-prescription-${entry.id || entryIndex}`} className="rounded-lg border border-white/20 bg-white/10 p-3">
+                                                <p className="text-xs text-red-100">{resolvePrescriptionDateLabel(entry)}</p>
+                                                <p className="text-sm font-semibold text-white mt-1">{summary || "Prescription details unavailable"}</p>
+                                            </div>
+                                        );
+                                    })
+                                )}
+                            </div>
                         )}
                     </div>
                 </section>
@@ -2565,14 +2610,21 @@ function UserDashboard() {
                                 <p className="text-sm font-semibold text-slate-800 mt-1">{visibleInboxMessages.length} total inbox notifications</p>
                             </div>
                             <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-                                <p className="text-xs uppercase tracking-wide text-slate-500">Medication Cycle</p>
+                                <p className="text-xs uppercase tracking-wide text-slate-500">Latest E-Prescription</p>
                                 <p className="text-sm font-semibold text-slate-800 mt-1">
-                                    {hasMedicationReminder
-                                        ? hasStartedIntake
-                                            ? `Next intake: ${reminderHours}h ${reminderMinutes}m (${nextIntakeClockLabel})`
-                                            : "Start intake countdown"
-                                        : ""}
+                                    {hasLatestPrescription
+                                        ? (() => {
+                                            const primaryMedicine = latestPrescriptionMedicines[0];
+                                            const intakeLabel = primaryMedicine?.intakePerDay > 0
+                                                ? `${primaryMedicine.intakePerDay}x/day`
+                                                : "As instructed";
+                                            return `${primaryMedicine?.name || "Medicine"} (${intakeLabel})`;
+                                        })()
+                                        : "No prescriptions yet"}
                                 </p>
+                                {hasLatestPrescription ? (
+                                    <p className="text-xs text-slate-500 mt-1">{latestPrescriptionDateLabel || "N/A"}</p>
+                                ) : null}
                             </div>
                         </div>
                     </div>
@@ -4270,6 +4322,45 @@ function UserDashboard() {
                 return;
             }
 
+            let inboxMessageWarning = "";
+            const patientRecipientId = consultationTarget.patientUserId || selectedPatientProfile?.user_id || selectedPatientProfile?.id || "";
+            if (patientRecipientId) {
+                const appointmentDateLabel = consultationTarget.dateKey ? formatLongDate(consultationTarget.dateKey) : "";
+                const prescriptionLines = parsedMedicines.map((medicine) => {
+                    const intakeLabel = medicine.intakePerDay > 0 ? `${medicine.intakePerDay}x/day` : "As instructed";
+                    const instruction = medicine.intakeInstruction ? ` (${medicine.intakeInstruction})` : "";
+                    return `- ${medicine.selectedMedicine.name} x ${medicine.quantity}: ${intakeLabel}${instruction}`;
+                });
+                const messageLines = [
+                    "E-Prescription",
+                    appointmentDateLabel ? `Checkup date: ${appointmentDateLabel}` : "Checkup date: N/A",
+                    "",
+                    "Medicines:",
+                    ...prescriptionLines,
+                ];
+
+                if (note) {
+                    messageLines.push("", `Note: ${note}`);
+                }
+
+                try {
+                    const { error: inboxError } = await supabase.rpc("create_inbox_message", {
+                        p_recipient_user_id: patientRecipientId,
+                        p_subject: "E-Prescription",
+                        p_body: messageLines.join("\n"),
+                        p_message_type: "e_prescription",
+                        p_appointment_id: consultationTarget.id,
+                    });
+                    if (inboxError) {
+                        throw inboxError;
+                    }
+                } catch (inboxError) {
+                    inboxMessageWarning = inboxError?.message || "Unable to send e-prescription to patient inbox.";
+                }
+            } else {
+                inboxMessageWarning = "Unable to identify the patient inbox recipient.";
+            }
+
             const consultationRecord = {
                 id: consultationRecordId,
                 appointmentId: consultationTarget.id,
@@ -4351,7 +4442,11 @@ function UserDashboard() {
             );
 
             setConsultations((prev) => [consultationRecord, ...prev]);
-            setConsultationMessage("Consultation completed. Prescribed medicines and assistive device records were saved.");
+            const baseMessage = "Consultation completed. Prescribed medicines and assistive device records were saved.";
+            const inboxMessage = inboxMessageWarning
+                ? `${baseMessage} E-prescription could not be sent to the patient's inbox.`
+                : `${baseMessage} E-prescription sent to the patient's inbox.`;
+            setConsultationMessage(inboxMessage);
             setConsultationError("");
             setConsultationTarget(null);
             setConsultationStartedAt("");
@@ -4521,170 +4616,178 @@ function UserDashboard() {
                                                 )}
                                             </div>
                                         </div>
-
-                                        <div>
-                                            <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="diagnosis">Diagnosis</label>
-                                            <textarea id="diagnosis" value={consultationForm.diagnosis} onChange={(e) => setConsultationForm((prev) => ({ ...prev, diagnosis: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" rows="3" placeholder="Diagnose the patient" />
-                                        </div>
-
-                                        <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
-                                            <div className="flex items-center justify-between gap-3">
-                                                <p className="text-sm font-bold text-slate-800">Prescribed medicine</p>
-                                                <button type="button" onClick={addPrescribedMedicine} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100">Add more prescribed medicine</button>
+                                        {!consultationStartedAt ? (
+                                            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                                                <p className="font-semibold text-slate-800">Start consultation to unlock diagnosis and prescription fields.</p>
+                                                <p className="text-xs text-slate-500 mt-1">Click "Start consultation" when you are ready to document the checkup.</p>
                                             </div>
-                                            {consultationForm.prescribedMedicines.map((medicineEntry, medicineIndex) => (
-                                                <div key={`prescribed-medicine-${medicineIndex}`} className="rounded-xl border border-slate-200 bg-white p-3 space-y-3">
+                                        ) : (
+                                            <>
+                                                <div>
+                                                    <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="diagnosis">Diagnosis</label>
+                                                    <textarea id="diagnosis" value={consultationForm.diagnosis} onChange={(e) => setConsultationForm((prev) => ({ ...prev, diagnosis: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" rows="3" placeholder="Diagnose the patient" />
+                                                </div>
+
+                                                <div className="space-y-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
                                                     <div className="flex items-center justify-between gap-3">
-                                                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Medicine #{medicineIndex + 1}</p>
-                                                        {consultationForm.prescribedMedicines.length > 1 && (
-                                                            <button type="button" onClick={() => removePrescribedMedicineAt(medicineIndex)} className="rounded-md border border-red-200 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-100">Remove</button>
-                                                        )}
+                                                        <p className="text-sm font-bold text-slate-800">Prescribed medicine</p>
+                                                        <button type="button" onClick={addPrescribedMedicine} className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100">Add more prescribed medicine</button>
                                                     </div>
-                                                    <div className="grid gap-3 sm:grid-cols-3">
-                                                        <div>
-                                                            <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor={`medicine-${medicineIndex}`}>Medicine</label>
-                                                            <select id={`medicine-${medicineIndex}`} value={medicineEntry.medicineId} onChange={(e) => updatePrescribedMedicineAt(medicineIndex, "medicineId", e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red">
-                                                                <option value="">Choose a medicine</option>
-                                                                {medicineOptions.map((item) => (
-                                                                    <option key={item.id} value={item.id}>{item.name} ({item.quantity} {item.unit})</option>
-                                                                ))}
-                                                            </select>
+                                                    {consultationForm.prescribedMedicines.map((medicineEntry, medicineIndex) => (
+                                                        <div key={`prescribed-medicine-${medicineIndex}`} className="rounded-xl border border-slate-200 bg-white p-3 space-y-3">
+                                                            <div className="flex items-center justify-between gap-3">
+                                                                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Medicine #{medicineIndex + 1}</p>
+                                                                {consultationForm.prescribedMedicines.length > 1 && (
+                                                                    <button type="button" onClick={() => removePrescribedMedicineAt(medicineIndex)} className="rounded-md border border-red-200 bg-red-50 px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-100">Remove</button>
+                                                                )}
+                                                            </div>
+                                                            <div className="grid gap-3 sm:grid-cols-3">
+                                                                <div>
+                                                                    <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor={`medicine-${medicineIndex}`}>Medicine</label>
+                                                                    <select id={`medicine-${medicineIndex}`} value={medicineEntry.medicineId} onChange={(e) => updatePrescribedMedicineAt(medicineIndex, "medicineId", e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red">
+                                                                        <option value="">Choose a medicine</option>
+                                                                        {medicineOptions.map((item) => (
+                                                                            <option key={item.id} value={item.id}>{item.name} ({item.quantity} {item.unit})</option>
+                                                                        ))}
+                                                                    </select>
+                                                                </div>
+                                                                <div>
+                                                                    <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor={`quantity-${medicineIndex}`}>Quantity</label>
+                                                                    <input id={`quantity-${medicineIndex}`} type="number" min="1" value={medicineEntry.quantity} onChange={(e) => updatePrescribedMedicineAt(medicineIndex, "quantity", e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" />
+                                                                </div>
+                                                                <div>
+                                                                    <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor={`intake-frequency-${medicineIndex}`}>Intake / day</label>
+                                                                    <input id={`intake-frequency-${medicineIndex}`} type="number" min="1" value={medicineEntry.intakePerDay} onChange={(e) => updatePrescribedMedicineAt(medicineIndex, "intakePerDay", e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" />
+                                                                </div>
+                                                            </div>
                                                         </div>
-                                                        <div>
-                                                            <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor={`quantity-${medicineIndex}`}>Quantity</label>
-                                                            <input id={`quantity-${medicineIndex}`} type="number" min="1" value={medicineEntry.quantity} onChange={(e) => updatePrescribedMedicineAt(medicineIndex, "quantity", e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" />
-                                                        </div>
-                                                        <div>
-                                                            <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor={`intake-frequency-${medicineIndex}`}>Intake / day</label>
-                                                            <input id={`intake-frequency-${medicineIndex}`} type="number" min="1" value={medicineEntry.intakePerDay} onChange={(e) => updatePrescribedMedicineAt(medicineIndex, "intakePerDay", e.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" />
-                                                        </div>
-                                                    </div>
+                                                    ))}
+                                                    <p className="text-xs text-slate-500">Quick choices: Intake/day can be 1, 2, or 3. For more than 3, write guidance in Note to patient.</p>
                                                 </div>
-                                            ))}
-                                            <p className="text-xs text-slate-500">Quick choices: Intake/day can be 1, 2, or 3. For more than 3, write guidance in Note to patient.</p>
-                                        </div>
 
-                                        <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
-                                            <div className="flex items-center justify-between gap-3">
-                                                <p className="text-sm font-bold text-slate-800">Assistive device</p>
-                                                <button type="button" onClick={() => setConsultationForm((prev) => ({ ...prev, includeAssistiveDevice: !prev.includeAssistiveDevice, assistiveDeviceId: !prev.includeAssistiveDevice ? prev.assistiveDeviceId : "", assistiveDeviceQuantity: !prev.includeAssistiveDevice ? prev.assistiveDeviceQuantity : 1, assistiveDeviceReason: !prev.includeAssistiveDevice ? prev.assistiveDeviceReason : "" }))} className={`rounded-lg px-3 py-2 text-xs font-semibold ${consultationForm.includeAssistiveDevice ? "bg-emerald-600 text-white hover:bg-emerald-700" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"}`}>
-                                                    {consultationForm.includeAssistiveDevice ? "Assistive device enabled" : "Give assistive device"}
-                                                </button>
-                                            </div>
-                                            {consultationForm.includeAssistiveDevice && (
-                                                <div className="space-y-3">
-                                                    <div className="grid gap-3 sm:grid-cols-2">
-                                                        <div>
-                                                            <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="assistive-device">Assistive device</label>
-                                                            <select id="assistive-device" value={consultationForm.assistiveDeviceId} onChange={(e) => setConsultationForm((prev) => ({ ...prev, assistiveDeviceId: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red">
-                                                                <option value="">Choose an assistive device</option>
-                                                                {assistiveDeviceOptions.map((item) => (
-                                                                    <option key={item.id} value={item.id}>{item.name} ({item.quantity} {item.unit})</option>
-                                                                ))}
-                                                            </select>
-                                                        </div>
-                                                        <div>
-                                                            <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="assistive-quantity">Quantity</label>
-                                                            <input id="assistive-quantity" type="number" min="1" value={consultationForm.assistiveDeviceQuantity} onChange={(e) => setConsultationForm((prev) => ({ ...prev, assistiveDeviceQuantity: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" />
-                                                        </div>
+                                                <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+                                                    <div className="flex items-center justify-between gap-3">
+                                                        <p className="text-sm font-bold text-slate-800">Assistive device</p>
+                                                        <button type="button" onClick={() => setConsultationForm((prev) => ({ ...prev, includeAssistiveDevice: !prev.includeAssistiveDevice, assistiveDeviceId: !prev.includeAssistiveDevice ? prev.assistiveDeviceId : "", assistiveDeviceQuantity: !prev.includeAssistiveDevice ? prev.assistiveDeviceQuantity : 1, assistiveDeviceReason: !prev.includeAssistiveDevice ? prev.assistiveDeviceReason : "" }))} className={`rounded-lg px-3 py-2 text-xs font-semibold ${consultationForm.includeAssistiveDevice ? "bg-emerald-600 text-white hover:bg-emerald-700" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"}`}>
+                                                            {consultationForm.includeAssistiveDevice ? "Assistive device enabled" : "Give assistive device"}
+                                                        </button>
                                                     </div>
-                                                    <div>
-                                                        <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="assistive-reason">Please specify the reason for giving assistive device</label>
-                                                        <textarea id="assistive-reason" value={consultationForm.assistiveDeviceReason} onChange={(e) => setConsultationForm((prev) => ({ ...prev, assistiveDeviceReason: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" rows="2" placeholder="Example: temporary mobility support due to ankle injury" />
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </div>
-
-                                        <div>
-                                            <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="note">Note to patient</label>
-                                            <input id="note" type="text" value={consultationForm.note} onChange={(e) => setConsultationForm((prev) => ({ ...prev, note: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" placeholder="Example: take 3x a day" />
-                                        </div>
-
-                                        <div>
-                                            <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="consult-proof">Consultation proof photo (required)</label>
-                                            <div className="mb-2 flex flex-wrap gap-2">
-                                                <button
-                                                    type="button"
-                                                    onClick={() => {
-                                                        setConsultationForm((prev) => ({ ...prev, proofImageMode: "upload" }));
-                                                        setProofCameraError("");
-                                                    }}
-                                                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${consultationForm.proofImageMode === "upload" ? "bg-slate-900 text-white" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"}`}
-                                                >
-                                                    Upload photo
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={async () => {
-                                                        setConsultationForm((prev) => ({ ...prev, proofImageMode: "take" }));
-                                                        const opened = await openProofCamera();
-                                                        if (!opened) {
-                                                            openProofCaptureInput();
-                                                        }
-                                                    }}
-                                                    className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${consultationForm.proofImageMode === "take" ? "bg-sky-600 text-white" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"}`}
-                                                >
-                                                    Take a photo
-                                                </button>
-                                            </div>
-                                            {consultationForm.proofImageMode === "upload" ? (
-                                                <>
-                                                    <input id="consult-proof" type="file" accept="image/*" onChange={(e) => handleProofImageChange(e.target.files?.[0] || null)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
-                                                    <p className="text-xs text-slate-500 mt-1">Upload an existing consultation proof image from this computer.</p>
-                                                </>
-                                            ) : (
-                                                <div className="space-y-2">
-                                                    <input
-                                                        ref={proofCaptureInputRef}
-                                                        type="file"
-                                                        accept="image/*"
-                                                        capture="environment"
-                                                        onChange={(e) => handleProofImageChange(e.target.files?.[0] || null)}
-                                                        className="hidden"
-                                                    />
-                                                    {proofCameraError && (
-                                                        <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{proofCameraError}</p>
+                                                    {consultationForm.includeAssistiveDevice && (
+                                                        <div className="space-y-3">
+                                                            <div className="grid gap-3 sm:grid-cols-2">
+                                                                <div>
+                                                                    <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="assistive-device">Assistive device</label>
+                                                                    <select id="assistive-device" value={consultationForm.assistiveDeviceId} onChange={(e) => setConsultationForm((prev) => ({ ...prev, assistiveDeviceId: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red">
+                                                                        <option value="">Choose an assistive device</option>
+                                                                        {assistiveDeviceOptions.map((item) => (
+                                                                            <option key={item.id} value={item.id}>{item.name} ({item.quantity} {item.unit})</option>
+                                                                        ))}
+                                                                    </select>
+                                                                </div>
+                                                                <div>
+                                                                    <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="assistive-quantity">Quantity</label>
+                                                                    <input id="assistive-quantity" type="number" min="1" value={consultationForm.assistiveDeviceQuantity} onChange={(e) => setConsultationForm((prev) => ({ ...prev, assistiveDeviceQuantity: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" />
+                                                                </div>
+                                                            </div>
+                                                            <div>
+                                                                <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="assistive-reason">Please specify the reason for giving assistive device</label>
+                                                                <textarea id="assistive-reason" value={consultationForm.assistiveDeviceReason} onChange={(e) => setConsultationForm((prev) => ({ ...prev, assistiveDeviceReason: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" rows="2" placeholder="Example: temporary mobility support due to ankle injury" />
+                                                            </div>
+                                                        </div>
                                                     )}
-                                                    <button
-                                                        type="button"
-                                                        onClick={openProofCaptureInput}
-                                                        className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                                                    >
-                                                        Use device camera capture
-                                                    </button>
-                                                    <div className="rounded-xl border border-slate-200 bg-black overflow-hidden">
-                                                        <video ref={proofCameraVideoRef} className="w-full aspect-4/3 object-cover" playsInline muted />
-                                                    </div>
-                                                    <div className="flex flex-wrap gap-2">
-                                                        <button
-                                                            type="button"
-                                                            onClick={captureProofPhoto}
-                                                            disabled={!isProofCameraOpen}
-                                                            className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                                                        >
-                                                            Capture photo
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            onClick={openProofCamera}
-                                                            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                                                        >
-                                                            Reopen live camera
-                                                        </button>
-                                                    </div>
-                                                    <p className="text-xs text-slate-500">Use live preview capture on supported browsers, or device camera capture for broader mobile compatibility.</p>
                                                 </div>
-                                            )}
-                                            {consultationForm.proofImageDataUrl && (
-                                                <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                                                    <p className="text-xs text-slate-500 mb-2">Selected: {consultationForm.proofImageName || "Captured image"}</p>
-                                                    <img src={consultationForm.proofImageDataUrl} alt="Consultation proof" className="w-full aspect-4/3 object-cover rounded-lg" />
-                                                </div>
-                                            )}
-                                        </div>
 
-                                        <button type="submit" className="rounded-lg bg-brand-red px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-dark">Complete Consultation</button>
+                                                <div>
+                                                    <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="note">Note to patient</label>
+                                                    <input id="note" type="text" value={consultationForm.note} onChange={(e) => setConsultationForm((prev) => ({ ...prev, note: e.target.value }))} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red" placeholder="Example: take 3x a day" />
+                                                </div>
+
+                                                <div>
+                                                    <label className="block text-sm font-semibold text-slate-700 mb-1" htmlFor="consult-proof">Consultation proof photo (required)</label>
+                                                    <div className="mb-2 flex flex-wrap gap-2">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                setConsultationForm((prev) => ({ ...prev, proofImageMode: "upload" }));
+                                                                setProofCameraError("");
+                                                            }}
+                                                            className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${consultationForm.proofImageMode === "upload" ? "bg-slate-900 text-white" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"}`}
+                                                        >
+                                                            Upload photo
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={async () => {
+                                                                setConsultationForm((prev) => ({ ...prev, proofImageMode: "take" }));
+                                                                const opened = await openProofCamera();
+                                                                if (!opened) {
+                                                                    openProofCaptureInput();
+                                                                }
+                                                            }}
+                                                            className={`rounded-lg px-3 py-1.5 text-xs font-semibold ${consultationForm.proofImageMode === "take" ? "bg-sky-600 text-white" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"}`}
+                                                        >
+                                                            Take a photo
+                                                        </button>
+                                                    </div>
+                                                    {consultationForm.proofImageMode === "upload" ? (
+                                                        <>
+                                                            <input id="consult-proof" type="file" accept="image/*" onChange={(e) => handleProofImageChange(e.target.files?.[0] || null)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+                                                            <p className="text-xs text-slate-500 mt-1">Upload an existing consultation proof image from this computer.</p>
+                                                        </>
+                                                    ) : (
+                                                        <div className="space-y-2">
+                                                            <input
+                                                                ref={proofCaptureInputRef}
+                                                                type="file"
+                                                                accept="image/*"
+                                                                capture="environment"
+                                                                onChange={(e) => handleProofImageChange(e.target.files?.[0] || null)}
+                                                                className="hidden"
+                                                            />
+                                                            {proofCameraError && (
+                                                                <p className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{proofCameraError}</p>
+                                                            )}
+                                                            <button
+                                                                type="button"
+                                                                onClick={openProofCaptureInput}
+                                                                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                                            >
+                                                                Use device camera capture
+                                                            </button>
+                                                            <div className="rounded-xl border border-slate-200 bg-black overflow-hidden">
+                                                                <video ref={proofCameraVideoRef} className="w-full aspect-4/3 object-cover" playsInline muted />
+                                                            </div>
+                                                            <div className="flex flex-wrap gap-2">
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={captureProofPhoto}
+                                                                    disabled={!isProofCameraOpen}
+                                                                    className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                                >
+                                                                    Capture photo
+                                                                </button>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={openProofCamera}
+                                                                    className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                                                >
+                                                                    Reopen live camera
+                                                                </button>
+                                                            </div>
+                                                            <p className="text-xs text-slate-500">Use live preview capture on supported browsers, or device camera capture for broader mobile compatibility.</p>
+                                                        </div>
+                                                    )}
+                                                    {consultationForm.proofImageDataUrl && (
+                                                        <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                                                            <p className="text-xs text-slate-500 mb-2">Selected: {consultationForm.proofImageName || "Captured image"}</p>
+                                                            <img src={consultationForm.proofImageDataUrl} alt="Consultation proof" className="w-full aspect-4/3 object-cover rounded-lg" />
+                                                        </div>
+                                                    )}
+                                                </div>
+
+                                                <button type="submit" className="rounded-lg bg-brand-red px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-dark">Complete Consultation</button>
+                                            </>
+                                        )}
                                     </>
                                 )}
                             </>
