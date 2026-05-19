@@ -29,15 +29,51 @@ const hashText = async (text: string) => {
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
 };
 
-const sendSmsViaGateway = async (phone: string, message: string, apiKey: string) => {
-  const url = `https://api.smsmobileapi.com/sendsms/?recipients=${encodeURIComponent(phone)}&message=${encodeURIComponent(message)}&apikey=${encodeURIComponent(apiKey)}`;
-  const res = await fetch(url, { method: "GET" });
-  try {
-    const text = await res.text();
-    return { ok: res.ok, status: res.status, body: text };
-  } catch {
-    return { ok: res.ok, status: res.status, body: null };
+// Normalize Philippine phone numbers to E.164 when possible
+const normalizePhoneToE164 = (raw: string) => {
+  if (!raw) return "";
+  const s = String(raw).trim();
+  if (s.startsWith("+")) return s;
+  const digits = s.replace(/\D/g, "");
+  if (!digits) return s;
+  // common PH formats: 09xxxxxxxxx (11), 9xxxxxxxxx (10), 63xxxxxxxxxx
+  if (digits.length === 11 && digits.startsWith("0")) return `+63${digits.slice(1)}`;
+  if (digits.length === 10 && digits.startsWith("9")) return `+63${digits}`;
+  if (digits.startsWith("63")) return `+${digits}`;
+  // fallback: prefix with +
+  return `+${digits}`;
+};
+
+// TextBee send helper - uses secrets from Deno.env
+const sendSmsViaTextBee = async (phone: string, message: string) => {
+  const apiKey = Deno.env.get("SMS_API_KEY");
+  const deviceId = Deno.env.get("TEXTBEE_DEVICE_ID");
+
+  if (!apiKey) throw new Error("Missing SMS_API_KEY");
+  if (!deviceId) throw new Error("Missing TEXTBEE_DEVICE_ID");
+
+  const response = await fetch(
+    `https://api.textbee.dev/api/v1/gateway/devices/${deviceId}/send-sms`,
+    {
+      method: "POST",
+      headers: {
+        "x-api-key": apiKey,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        recipients: [phone],
+        message,
+      }),
+    }
+  );
+
+  const payload = await response.json().catch(() => null);
+
+  if (!response.ok) {
+    throw new Error(`TextBee send failed: ${JSON.stringify(payload)}`);
   }
+
+  return payload;
 };
 
 Deno.serve(async (req: Request) => {
@@ -128,22 +164,23 @@ Deno.serve(async (req: Request) => {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
 
+    const normalizedPhone = normalizePhoneToE164(phone);
+
     const { error: insertError } = await adminClient
       .from("auth_otps")
-      .insert([{ user_id: requester.id, phone, otp_hash: otpHash, purpose: purpose, expires_at: expiresAt }]);
+      .insert([{ user_id: requester.id, phone: normalizedPhone, otp_hash: otpHash, purpose: purpose, expires_at: expiresAt }]);
 
     if (insertError) {
       return jsonResponse(500, { error: "Unable to store OTP." });
     }
 
     const message = `Maligayang araw! Your OTP for San Perfecto Health Center e-services is ${otp}. Hindi ka ba nag-request ng OTP? Isumbong sa security admin! Email: wnciplays@gmail.com`;
-    const smsResult = await sendSmsViaGateway(phone, message, smsApiKey);
-
-    if (!smsResult.ok) {
-      return jsonResponse(502, { error: "Failed to send SMS.", sms: smsResult });
+    try {
+      const textBeeResult = await sendSmsViaTextBee(normalizedPhone, message);
+      return jsonResponse(200, { success: true, message: "OTP sent.", providerResponse: textBeeResult });
+    } catch (err: any) {
+      return jsonResponse(502, { error: "Failed to send SMS.", details: String(err?.message || err) });
     }
-
-    return jsonResponse(200, { success: true, message: "OTP sent." });
   }
 
   if (action === "verify") {
