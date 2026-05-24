@@ -29,6 +29,8 @@ const hashText = async (text: string) => {
   return Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("");
 };
 
+const normalizeOtpCode = (value: unknown) => String(value ?? "").replace(/\D/g, "").trim();
+
 // Normalize Philippine phone numbers to E.164 when possible
 const normalizePhoneToE164 = (raw: string) => {
   if (!raw) return "";
@@ -117,6 +119,7 @@ Deno.serve(async (req: Request) => {
 
   const action = String(body.action || "").trim().toLowerCase();
   const purpose = String(body.purpose || "auth").trim();
+  const requestedNewPhone = normalizePhoneToE164(String(body.newPhone || "").trim());
 
   if (action === "initiate") {
     // Look up profile and phone source
@@ -130,6 +133,7 @@ Deno.serve(async (req: Request) => {
       return jsonResponse(404, { error: "Profile not found for user." });
     }
 
+    const requestedPhone = normalizePhoneToE164(String(body.phone || "").trim());
     let phone = "";
 
     if (profile.role === "patient") {
@@ -138,9 +142,10 @@ Deno.serve(async (req: Request) => {
         .select("contact_number")
         .eq("user_id", requester.id)
         .maybeSingle();
-      phone = String(patientProfile?.contact_number || "").trim();
+      const storedPatientPhone = normalizePhoneToE164(String(patientProfile?.contact_number || "").trim());
+      phone = storedPatientPhone || requestedPhone;
     } else {
-      phone = String(requester.phone || "").trim();
+      phone = requestedPhone || normalizePhoneToE164(String(requester.phone || "").trim());
     }
 
     // If admin and no phone, set provided admin phone (configurable by caller)
@@ -159,16 +164,29 @@ Deno.serve(async (req: Request) => {
       return jsonResponse(400, { error: "No phone number found for this account. Please update contact number." });
     }
 
+
     const otp = String(Math.floor(100000 + Math.random() * 900000));
     const otpHash = await hashText(otp);
     const now = new Date();
     const expiresAt = new Date(now.getTime() + 5 * 60 * 1000).toISOString();
 
     const normalizedPhone = normalizePhoneToE164(phone);
+    if (!normalizedPhone || normalizedPhone === "+") {
+      return jsonResponse(400, { error: "No valid phone number found for this account. Please update contact number." });
+    }
 
     const { error: insertError } = await adminClient
       .from("auth_otps")
-      .insert([{ user_id: requester.id, phone: normalizedPhone, otp_hash: otpHash, purpose: purpose, expires_at: expiresAt }]);
+      .insert([
+        {
+          user_id: requester.id,
+          phone: normalizedPhone,
+          new_phone: purpose === "phone_change" ? (requestedNewPhone || null) : null,
+          otp_hash: otpHash,
+          purpose: purpose,
+          expires_at: expiresAt,
+        },
+      ]);
 
     if (insertError) {
       return jsonResponse(500, { error: "Unable to store OTP." });
@@ -184,34 +202,70 @@ Deno.serve(async (req: Request) => {
   }
 
   if (action === "verify") {
-    const code = String(body.code || "").trim();
+    const code = normalizeOtpCode(body.code);
     if (!code) return jsonResponse(400, { error: "OTP code is required." });
+    if (!/^\d{6}$/.test(code)) return jsonResponse(400, { error: "OTP code must be a 6-digit number." });
 
-    // Find latest unconsumed OTP for this user and purpose
+    // Check recent unconsumed OTPs so a valid code still works even if multiple codes were issued.
+    const now = new Date();
     const { data: rows, error: selectError } = await adminClient
       .from("auth_otps")
-      .select("id, otp_hash, attempts, consumed, expires_at")
+      .select("id, otp_hash, attempts, consumed, expires_at, new_phone")
       .eq("user_id", requester.id)
       .eq("purpose", purpose)
+      .eq("consumed", false)
+      .gt("expires_at", now.toISOString())
       .order("created_at", { ascending: false })
-      .limit(1);
+      .limit(10);
 
     if (selectError) return jsonResponse(500, { error: "Failed to query OTPs." });
     if (!rows || rows.length === 0) return jsonResponse(404, { error: "No OTP found for verification." });
 
-    const otpRow = rows[0] as any;
-    if (otpRow.consumed) return jsonResponse(400, { error: "OTP already used." });
-
-    const now = new Date();
-    if (new Date(otpRow.expires_at) < now) return jsonResponse(400, { error: "OTP expired." });
-
     const providedHash = await hashText(code);
-    if (providedHash === otpRow.otp_hash) {
-      await adminClient.from("auth_otps").update({ consumed: true }).eq("id", otpRow.id);
+    const matchedRow = (rows as any[]).find((row) => row.otp_hash === providedHash);
+    if (matchedRow) {
+      if (purpose === "phone_change") {
+        const resolvedNewPhone = requestedNewPhone || normalizePhoneToE164(String(matchedRow.new_phone || "").trim());
+        if (!resolvedNewPhone) {
+          return jsonResponse(400, { error: "New phone number is required for phone change verification." });
+        }
+
+        const { error: authUpdateError } = await adminClient.auth.admin.updateUserById(requester.id, {
+          phone: resolvedNewPhone,
+          phone_confirm: true,
+        });
+
+        if (authUpdateError) {
+          return jsonResponse(500, { error: "Unable to update phone number." });
+        }
+
+        const { error: profileUpdateError } = await adminClient
+          .from("patient_profiles")
+          .update({ contact_number: resolvedNewPhone, updated_at: new Date().toISOString() })
+          .eq("user_id", requester.id);
+
+        if (profileUpdateError) {
+          // For non-patient roles there may be no patient_profiles row. That's fine.
+          const { data: roleRow } = await adminClient
+            .from("profiles")
+            .select("role")
+            .eq("id", requester.id)
+            .maybeSingle();
+
+          if (roleRow?.role === "patient") {
+            return jsonResponse(500, { error: "Phone updated in auth, but patient profile update failed." });
+          }
+        }
+
+        await adminClient.from("profiles").update({ updated_at: new Date().toISOString() }).eq("id", requester.id);
+      }
+
+      await adminClient.from("auth_otps").update({ consumed: true }).eq("id", matchedRow.id);
       return jsonResponse(200, { success: true });
     }
 
-    // Increment attempts
+    // Increment attempts on the most recent active OTP so repeated failures still get tracked.
+    const otpRow = rows[0] as any;
     await adminClient.from("auth_otps").update({ attempts: (otpRow.attempts || 0) + 1 }).eq("id", otpRow.id);
     return jsonResponse(400, { error: "Invalid OTP code." });
   }

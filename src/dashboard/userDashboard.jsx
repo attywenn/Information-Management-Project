@@ -30,6 +30,9 @@ import {
     updateMyProfileSettings,
     getMyProfileBundle,
     fetchPatientAndHealthWorkerStats,
+    deleteConsultationRecord,
+    initiatePhoneChangeOtpForCurrentSession,
+    verifyPhoneChangeForCurrentSession,
 } from "../services/supabaseBackendService.js";
 
 ChartJS.register(Tooltip, Legend, CategoryScale, LinearScale, BarElement);
@@ -442,6 +445,36 @@ const createConsultationMedicineItemDraft = (medicineId = "") => ({
     intakeInstruction: "",
 });
 
+const normalizePhoneForComparison = (value) => {
+    const raw = String(value || "").trim();
+    if (!raw) {
+        return "";
+    }
+
+    if (raw.startsWith("+")) {
+        return raw.replace(/\s+/g, "");
+    }
+
+    const digits = raw.replace(/\D/g, "");
+    if (!digits) {
+        return "";
+    }
+
+    if (digits.length === 11 && digits.startsWith("0")) {
+        return `+63${digits.slice(1)}`;
+    }
+
+    if (digits.length === 10 && digits.startsWith("9")) {
+        return `+63${digits}`;
+    }
+
+    if (digits.startsWith("63")) {
+        return `+${digits}`;
+    }
+
+    return `+${digits}`;
+};
+
 const createDefaultSettingsDraft = (user) => ({
     avatarDataUrl: user?.avatarDataUrl || "",
     avatarFile: null,
@@ -461,6 +494,7 @@ const createDefaultSettingsDraft = (user) => ({
             ? user?.address?.purokSubdivision || ""
             : user?.purokSubdivision || "",
     email: user?.email || "",
+    phoneNumber: user?.phone || user?.contactNumber || "",
     dob: user?.dob || "",
     password: user?.password || "",
     pinCode: user?.pinCode || "",
@@ -491,6 +525,7 @@ const buildPersistedSettingsDraft = (draft) => ({
     streetName: draft?.streetName || "",
     purokSubdivision: draft?.purokSubdivision || "",
     email: draft?.email || "",
+    phoneNumber: draft?.phoneNumber || "",
     dob: draft?.dob || "",
     password: draft?.password || "",
     pinCode: draft?.pinCode || "",
@@ -847,6 +882,15 @@ function UserDashboard() {
     const [deleteModalOpen, setDeleteModalOpen] = useState(false);
     const [deletePassword, setDeletePassword] = useState("");
     const [deleteError, setDeleteError] = useState("");
+    const [showPhoneChangeModal, setShowPhoneChangeModal] = useState(false);
+    const [pendingPhoneNumber, setPendingPhoneNumber] = useState("");
+    const [phoneChangeOtp, setPhoneChangeOtp] = useState("");
+    const [phoneChangeError, setPhoneChangeError] = useState("");
+    const [phoneChangeMessage, setPhoneChangeMessage] = useState("");
+    const [phoneChangeSubmitting, setPhoneChangeSubmitting] = useState(false);
+    const [showConsultationDeleteConfirm, setShowConsultationDeleteConfirm] = useState(false);
+    const [consultationDeleteLoading, setConsultationDeleteLoading] = useState(false);
+    const [consultationDeleteError, setConsultationDeleteError] = useState("");
     const [currentDateTime, setCurrentDateTime] = useState(() => new Date());
     const [medicationReminderHasStarted, setMedicationReminderHasStarted] = useState(false);
     const [medicationReminderNextIntakeAt, setMedicationReminderNextIntakeAt] = useState("");
@@ -1483,7 +1527,7 @@ function UserDashboard() {
             const shouldLoadAppointments = path === "/dashboard" || path === "/schedules" || path === "/consultation";
             const shouldLoadConsultations = path === "/dashboard" || path === "/history" || path === "/consultation";
             const shouldLoadInventory = user?.role !== "patient" && (path === "/consultation" || path === "/inventory");
-            const shouldLoadPatientDirectory = user?.role !== "patient" && (path === "/history" || path === "/consultation" || (user?.role === "health_worker" && path === "/dashboard"));
+            const shouldLoadPatientDirectory = user?.role !== "patient" && (path === "/dashboard" || path === "/history" || path === "/consultation");
             const shouldLoadInbox = isPatient && (path === "/dashboard" || path === "/inbox");
 
             const [appointmentRows, consultationRows, inboxRows, inventoryRows, patientRows] = await Promise.all([
@@ -2685,6 +2729,9 @@ function UserDashboard() {
             normalizePart(settingsDraft.houseNumber) !== normalizePart(baselineAddress.houseNumber || user?.houseNumber)
             || normalizePart(settingsDraft.streetName) !== normalizePart(baselineAddress.street || baselineAddress.streetName || user?.streetName)
             || normalizePart(settingsDraft.purokSubdivision) !== normalizePart(baselineAddress.purokSubdivision || user?.purokSubdivision);
+        const currentPhoneNumber = normalizePhoneForComparison(user?.phone || user?.contactNumber || "");
+        const draftPhoneNumber = normalizePhoneForComparison(settingsDraft.phoneNumber || "");
+        const isPhoneChangeRequested = Boolean(draftPhoneNumber && draftPhoneNumber !== currentPhoneNumber);
 
         const handleAvatarChange = (file) => {
             if (isAvatarOnCooldown) {
@@ -2726,6 +2773,11 @@ function UserDashboard() {
                 return;
             }
 
+            if (isPhoneChangeRequested && !currentPhoneNumber) {
+                setSettingsError("No current phone number is registered for this account.");
+                return;
+            }
+
             if (isCooldownManagedRole && isAvatarChangeRequested) {
                 const confirmedAvatarChange = window.confirm(
                     "Are you sure to change profile picture? You can only change your profile photo every 7 days (OK/Cancel)"
@@ -2744,6 +2796,8 @@ function UserDashboard() {
                 }
             }
 
+            let phoneChangeInitiationFailed = false;
+
             try {
                 const bundle = await updateMyProfileSettings({
                     surname: settingsDraft.surname,
@@ -2760,6 +2814,26 @@ function UserDashboard() {
                     avatarFile: settingsDraft.avatarFile || null,
                     avatarUrl: settingsDraft.avatarDataUrl,
                 });
+
+                if (isPhoneChangeRequested) {
+                    setPendingPhoneNumber(draftPhoneNumber);
+                    setPhoneChangeOtp("");
+                    setPhoneChangeError("");
+                    setPhoneChangeMessage("Sending OTP to your current phone number...");
+                    setShowPhoneChangeModal(true);
+
+                    try {
+                        await initiatePhoneChangeOtpForCurrentSession({ newPhone: draftPhoneNumber });
+                        setPhoneChangeMessage("OTP sent. Enter the code sent to your current phone to confirm the new number.");
+                    } catch (phoneOtpError) {
+                        setShowPhoneChangeModal(false);
+                        setPendingPhoneNumber("");
+                        setPhoneChangeOtp("");
+                        setPhoneChangeMessage("");
+                        phoneChangeInitiationFailed = true;
+                        setSettingsError(phoneOtpError?.message || "Unable to send phone change OTP.");
+                    }
+                }
 
                 const resolvedAddress = bundle.address && typeof bundle.address === "object"
                     ? bundle.address
@@ -2820,6 +2894,7 @@ function UserDashboard() {
                             streetName: persistedSettings.streetName,
                             purokSubdivision: persistedSettings.purokSubdivision,
                             email: persistedSettings.email,
+                                phoneNumber: persistedSettings.phoneNumber,
                             dob: persistedSettings.dob,
                             adminId: persistedSettings.adminId,
                             licenseId: persistedSettings.licenseId,
@@ -2834,11 +2909,60 @@ function UserDashboard() {
                 // Invalidate profile-related queries to ensure fresh data with updated address
                 await queryClient.invalidateQueries({ queryKey: ["my-profile-bundle"] });
                 await queryClient.invalidateQueries({ queryKey: ["dashboard-collections"] });
-                
-                setSettingsMessage("Settings saved successfully.");
+
+                setSettingsMessage(isPhoneChangeRequested && !phoneChangeInitiationFailed
+                    ? "Settings saved. Verify the OTP to finish changing your phone number."
+                    : "Settings saved successfully.");
             } catch (error) {
                 setSettingsError(error?.message || "Unable to save settings.");
             }
+        };
+
+        const confirmPhoneChange = async (e) => {
+            e.preventDefault();
+            setPhoneChangeError("");
+
+            const normalizedOtp = phoneChangeOtp.replace(/\D/g, "").trim();
+            if (!normalizedOtp) {
+                setPhoneChangeError("Please enter the OTP sent to your current phone number.");
+                return;
+            }
+
+            if (!pendingPhoneNumber) {
+                setPhoneChangeError("No phone number is pending verification.");
+                return;
+            }
+
+            setPhoneChangeSubmitting(true);
+            try {
+                await verifyPhoneChangeForCurrentSession({
+                    code: normalizedOtp,
+                    newPhone: pendingPhoneNumber,
+                });
+
+                updateUser({
+                    phone: pendingPhoneNumber,
+                    contactNumber: pendingPhoneNumber,
+                });
+                setSettingsDraft((previous) => ({ ...previous, phoneNumber: pendingPhoneNumber }));
+                setSettingsMessage("Phone number updated successfully.");
+                setShowPhoneChangeModal(false);
+                setPendingPhoneNumber("");
+                setPhoneChangeOtp("");
+                setPhoneChangeMessage("");
+            } catch (phoneChangeConfirmError) {
+                setPhoneChangeError(phoneChangeConfirmError?.message || "Unable to verify OTP.");
+            } finally {
+                setPhoneChangeSubmitting(false);
+            }
+        };
+
+        const cancelPhoneChange = () => {
+            setShowPhoneChangeModal(false);
+            setPendingPhoneNumber("");
+            setPhoneChangeOtp("");
+            setPhoneChangeError("");
+            setPhoneChangeMessage("");
         };
 
         const handleChangePassword = async (e) => {
@@ -3053,6 +3177,19 @@ function UserDashboard() {
                                     className={inputClass}
                                 />
                             </div>
+                            <div>
+                                <label className={`block text-sm font-semibold mb-1 ${mutedClass}`}>Phone Number</label>
+                                <input
+                                    type="tel"
+                                    value={settingsDraft.phoneNumber}
+                                    onChange={(e) => setSettingsDraft((previous) => ({ ...previous, phoneNumber: e.target.value }))}
+                                    className={inputClass}
+                                    placeholder="Enter phone number"
+                                />
+                                <p className="mt-1 text-xs text-slate-500">
+                                    An OTP will be sent to your currently registered number before this change is saved.
+                                </p>
+                            </div>
                         </div>
                     </div>
 
@@ -3229,6 +3366,59 @@ function UserDashboard() {
                                     DELETE ACCOUNT
                                 </button>
                             </div>
+                        </div>
+                    </div>
+                )}
+
+                {showPhoneChangeModal && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-4">
+                        <div className={`w-full max-w-lg rounded-3xl border shadow-2xl p-6 space-y-4 ${panelClass}`}>
+                            <div>
+                                <h2 className="text-2xl font-bold text-slate-900">Verify phone number change</h2>
+                                <p className={`mt-2 text-sm leading-6 ${mutedClass}`}>
+                                    An OTP was sent to your currently registered phone number. Enter it to confirm {pendingPhoneNumber || "the new phone number"}.
+                                </p>
+                            </div>
+
+                            {phoneChangeMessage && <p className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-200">{phoneChangeMessage}</p>}
+                            {phoneChangeError && <p className="text-sm text-red-600 bg-red-50 p-3 rounded-lg border border-red-200">{phoneChangeError}</p>}
+
+                            <form onSubmit={confirmPhoneChange} className="space-y-4">
+                                <div>
+                                    <label className={`block text-sm font-semibold mb-1 ${mutedClass}`}>OTP</label>
+                                    <input
+                                        type="text"
+                                        inputMode="numeric"
+                                        autoComplete="one-time-code"
+                                        pattern="[0-9]*"
+                                        value={phoneChangeOtp}
+                                        onChange={(e) => setPhoneChangeOtp(e.target.value)}
+                                        className={inputClass}
+                                        placeholder="Enter 6-digit OTP"
+                                    />
+                                </div>
+
+                                <div className="flex flex-col sm:flex-row gap-3 justify-end pt-2">
+                                    <button
+                                        type="button"
+                                        onClick={cancelPhoneChange}
+                                        className={`rounded-xl px-5 py-3 text-sm font-semibold border ${
+                                            settingsDraft.theme === "dark"
+                                                ? "border-slate-600 text-slate-100 hover:bg-slate-800"
+                                                : "border-slate-300 text-slate-700 hover:bg-slate-50"
+                                        }`}
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="submit"
+                                        disabled={phoneChangeSubmitting}
+                                        className="rounded-xl bg-brand-red px-5 py-3 text-sm font-semibold text-white hover:bg-brand-dark disabled:opacity-60 disabled:cursor-not-allowed"
+                                    >
+                                        {phoneChangeSubmitting ? "Verifying..." : "Verify & Save"}
+                                    </button>
+                                </div>
+                            </form>
                         </div>
                     </div>
                 )}
@@ -5132,7 +5322,21 @@ function UserDashboard() {
                             </div>
 
                             <div className="lg:col-span-7 bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-4">
-                                <h2 className="text-xl font-bold text-slate-900">Consultation details</h2>
+                                <div className="flex items-center justify-between">
+                                    <h2 className="text-xl font-bold text-slate-900">Consultation details</h2>
+                                    <div>
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setConsultationDeleteError("");
+                                                setShowConsultationDeleteConfirm(true);
+                                            }}
+                                            className="rounded-lg border border-red-200 bg-red-50 px-3 py-1 text-sm font-semibold text-red-700 hover:bg-red-100"
+                                        >
+                                            Delete
+                                        </button>
+                                    </div>
+                                </div>
                                 {!selectedRecord ? (
                                     <p className="text-sm text-slate-600">Select a consultation record to view details.</p>
                                 ) : (
@@ -5459,6 +5663,47 @@ function UserDashboard() {
                         >
                             Done
                         </button>
+                    </div>
+                </div>
+            )}
+
+            {showConsultationDeleteConfirm && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                    <div className="w-full max-w-md rounded-3xl bg-white shadow-2xl border border-slate-200 p-6">
+                        <h2 className="text-lg font-bold text-slate-900">Are you sure to delete?</h2>
+                        <p className="text-sm text-slate-600 mt-2">This will permanently remove the selected consultation record.</p>
+                        {consultationDeleteError && <p className="text-sm text-red-600 mt-3">{consultationDeleteError}</p>}
+                        <div className="flex items-center gap-3 mt-4">
+                            <button
+                                type="button"
+                                onClick={async () => {
+                                    if (!selectedStaffHistoryRecord || !selectedStaffHistoryRecord.id) return;
+                                    setConsultationDeleteError("");
+                                    setConsultationDeleteLoading(true);
+                                    try {
+                                        await deleteConsultationRecord(selectedStaffHistoryRecord.id);
+                                        setConsultations((prev) => prev.filter((c) => String(c.id) !== String(selectedStaffHistoryRecord.id)));
+                                        setHistorySelectedRecordId("");
+                                        setShowConsultationDeleteConfirm(false);
+                                    } catch (err) {
+                                        setConsultationDeleteError(err?.message || "Unable to delete record.");
+                                    } finally {
+                                        setConsultationDeleteLoading(false);
+                                    }
+                                }}
+                                disabled={consultationDeleteLoading}
+                                className="flex-1 rounded-xl bg-red-600 px-4 py-3 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-60"
+                            >
+                                {consultationDeleteLoading ? "Deleting..." : "Delete"}
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setShowConsultationDeleteConfirm(false)}
+                                className="flex-1 rounded-xl border px-4 py-3 text-sm font-semibold"
+                            >
+                                Cancel
+                            </button>
+                        </div>
                     </div>
                 </div>
             )}

@@ -63,6 +63,36 @@ const normalizeDobValue = (value) => {
   return parsed.toISOString().slice(0, 10);
 };
 
+const normalizePhoneValue = (value) => {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  if (raw.startsWith("+")) {
+    return raw;
+  }
+
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) {
+    return "";
+  }
+
+  if (digits.length === 11 && digits.startsWith("0")) {
+    return `+63${digits.slice(1)}`;
+  }
+
+  if (digits.length === 10 && digits.startsWith("9")) {
+    return `+63${digits}`;
+  }
+
+  if (digits.startsWith("63")) {
+    return `+${digits}`;
+  }
+
+  return `+${digits}`;
+};
+
 const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 100;
 
@@ -479,6 +509,7 @@ export async function getMyProfileBundle() {
     sex: data.sex || "",
     gender: data.gender || "",
     dob: data.dob || "",
+    phone: data.phone || data.contactNumber || "",
     contactNumber: data.contactNumber || "",
     pinCode: data.pinCode || "",
   };
@@ -535,7 +566,10 @@ export async function signInPortalAccount({ identifier, password, role, dob }) {
 
   return {
     session: data.session,
-    profile,
+    profile: {
+      ...profile,
+      phone: data.user?.phone || profile.phone || "",
+    },
   };
 }
 
@@ -969,6 +1003,28 @@ export async function fetchPatientAndHealthWorkerStats() {
     patientCount: patientResult.count || 0,
     healthWorkerCount: healthWorkerResult.count || 0,
   };
+}
+
+export async function deleteConsultationRecord(consultationId) {
+  if (!consultationId) {
+    throw new Error("Consultation ID is required.");
+  }
+
+  try {
+    // Delete dependent consultation items first to avoid FK constraint issues
+    await supabase.from("consultation_items").delete().eq("consultation_id", consultationId);
+    // Delete related inventory movements if any
+    await supabase.from("inventory_movements").delete().eq("consultation_id", consultationId);
+
+    const { error } = await supabase.from("consultations").delete().eq("id", consultationId);
+    if (error) {
+      throw error;
+    }
+
+    return { success: true };
+  } catch (err) {
+    throw toBackendError(err, "Unable to delete consultation record.");
+  }
 }
 
 export async function fetchInventoryItems(options = {}) {
@@ -1428,6 +1484,7 @@ export async function updateMyProfileSettingsWithAvatar(payload) {
   const userId = userData.user.id;
   const now = new Date().toISOString();
   const profileBundle = await getMyProfileBundle();
+  const requestedPhone = normalizePhoneValue(payload.phoneNumber || payload.contactNumber || "");
 
   const avatarUrlFromPayload = typeof payload.avatarUrl === "string" ? payload.avatarUrl.trim() : "";
   const hasAvatarFile = payload.avatarFile instanceof File;
@@ -1526,6 +1583,7 @@ export async function updateMyProfileSettingsWithAvatar(payload) {
   }
 
   if (profileBundle.role === "patient") {
+    const nextContactNumber = requestedPhone || profileBundle.contactNumber || null;
     const { error: patientError } = await supabase
       .from("patient_profiles")
       .update({
@@ -1533,7 +1591,7 @@ export async function updateMyProfileSettingsWithAvatar(payload) {
         firstname: profileBundle.firstname || "",
         middlename: profileBundle.middlename || "",
         dob: payload.dob || null,
-        contact_number: payload.contactNumber || null,
+        contact_number: nextContactNumber,
         address_id: resolvedAddressId,
         last_address_updated_at: isAddressChangeRequested ? now : profileBundle.lastAddressUpdatedAt,
         updated_at: now,
@@ -1836,13 +1894,13 @@ export async function deletePatientAccountByAdmin(payload) {
   }
 }
 
-export async function initiateOtpForCurrentSession({ adminPhone = null, purpose = "auth" } = {}) {
+export async function initiateOtpForCurrentSession({ adminPhone = null, phone = null, purpose = "auth" } = {}) {
   const { data: sessionData } = await supabase.auth.getSession();
   const token = sessionData?.session?.access_token;
   if (!token) throw new Error("No active session. Cannot initiate OTP.");
 
   const { data, error } = await supabase.functions.invoke("auth-otp", {
-    body: { action: "initiate", purpose, adminPhone },
+    body: { action: "initiate", purpose, adminPhone, phone },
     headers: { Authorization: `Bearer ${token}` },
   });
 
@@ -1865,6 +1923,40 @@ export async function verifyOtpForCurrentSession({ code, purpose = "auth" } = {}
 
   if (error) {
     throw await toFunctionInvokeError(error, "Unable to verify OTP.");
+  }
+
+  return data;
+}
+
+export async function initiatePhoneChangeOtpForCurrentSession({ newPhone = "" } = {}) {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  if (!token) throw new Error("No active session. Cannot initiate phone change OTP.");
+
+  const { data, error } = await supabase.functions.invoke("auth-otp", {
+    body: { action: "initiate", purpose: "phone_change", newPhone },
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (error) {
+    throw await toFunctionInvokeError(error, "Unable to initiate phone change OTP.");
+  }
+
+  return data;
+}
+
+export async function verifyPhoneChangeForCurrentSession({ code, newPhone } = {}) {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  if (!token) throw new Error("No active session. Cannot verify phone change OTP.");
+
+  const { data, error } = await supabase.functions.invoke("auth-otp", {
+    body: { action: "verify", code, purpose: "phone_change", newPhone },
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (error) {
+    throw await toFunctionInvokeError(error, "Unable to verify phone change OTP.");
   }
 
   return data;

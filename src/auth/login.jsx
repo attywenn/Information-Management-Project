@@ -14,10 +14,7 @@ function Login({ setIsRegisteringState }) {
   const [systemLicenseNumber, setSystemLicenseNumber] = useState("");
   const [adminId, setAdminId] = useState("");
   const [pinCode, setPinCode] = useState("");
-  const [adminOtp, setAdminOtp] = useState("");
-  const [generatedAdminOtp, setGeneratedAdminOtp] = useState("");
-  const [adminStep, setAdminStep] = useState("credentials");
-  const [adminOtpMessage, setAdminOtpMessage] = useState("");
+  
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [otpPending, setOtpPending] = useState(false);
@@ -39,18 +36,7 @@ function Login({ setIsRegisteringState }) {
     setIsSubmitting(true);
 
     try {
-      if (role === "admin" && adminStep === "credentials") {
-        const otp = String(Math.floor(100000 + Math.random() * 900000));
-        setGeneratedAdminOtp(otp);
-        setAdminStep("otp");
-        setAdminOtpMessage(`OTP sent to ${email || "your email"}. Demo OTP: ${otp}`);
-        return;
-      }
-
-      if (role === "admin" && adminOtp !== generatedAdminOtp) {
-        setError("Invalid OTP. Please try again.");
-        return;
-      }
+      // Removed non-SMS admin OTP step; proceed to credential verification
 
       const loginIdentifier = role === "admin" ? (adminId || email) : identifier;
       const { session, profile } = await signInPortalAccount({
@@ -87,7 +73,9 @@ function Login({ setIsRegisteringState }) {
       setOtpMessage("Sending OTP...");
 
       try {
-        await initiateOtpForCurrentSession();
+        await initiateOtpForCurrentSession({
+          phone: tempProfile?.contactNumber || tempProfile?.phone || "",
+        });
         setOtpMessage("OTP sent. Check your phone and enter the code.");
       } catch (initErr) {
         setOtpPending(false);
@@ -109,12 +97,13 @@ function Login({ setIsRegisteringState }) {
     setIsSubmitting(true);
 
     try {
-      if (!otpCode) {
+      const normalizedOtpCode = otpCode.replace(/\D/g, "").trim();
+      if (!normalizedOtpCode) {
         setOtpError("Please enter the OTP sent to your phone.");
         return;
       }
 
-      await verifyOtpForCurrentSession({ code: otpCode });
+      await verifyOtpForCurrentSession({ code: normalizedOtpCode });
 
       // success: finalize login
       login({
@@ -133,7 +122,9 @@ function Login({ setIsRegisteringState }) {
   const cancelOtpFlow = async () => {
     try {
       await signOutPortalAccount();
-    } catch {}
+    } catch (cancelError) {
+      console.warn("Failed to sign out during OTP cancellation.", cancelError);
+    }
     setOtpPending(false);
     setTempProfile(null);
     setTempSession(null);
@@ -142,12 +133,7 @@ function Login({ setIsRegisteringState }) {
     setOtpMessage("");
   };
 
-  const resetAdminStep = () => {
-    setAdminStep("credentials");
-    setAdminOtp("");
-    setGeneratedAdminOtp("");
-    setAdminOtpMessage("");
-  };
+  
 
   const handleRecoverPassword = async (e) => {
     e.preventDefault();
@@ -194,10 +180,9 @@ function Login({ setIsRegisteringState }) {
             className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red transition-all"
             value={role}
             onChange={(e) => {
-              setRole(e.target.value);
-              setError("");
-              resetAdminStep();
-            }}
+                setRole(e.target.value);
+                setError("");
+              }}
           >
             <option value="patient">Patient</option>
             <option value="health_worker">Health Worker</option>
@@ -322,23 +307,7 @@ function Login({ setIsRegisteringState }) {
                 required
               />
             </div>
-            {adminStep === "otp" && (
-              <div className="space-y-1.5">
-                <label htmlFor="admin-otp" className="text-sm font-semibold text-slate-700">
-                  OTP
-                </label>
-                <input
-                  id="admin-otp"
-                  type="text"
-                  placeholder="Enter OTP sent to email"
-                  className="w-full p-2 border border-slate-300 rounded focus:ring-2 focus:ring-brand-red/50 focus:border-brand-red"
-                  value={adminOtp}
-                  onChange={(e) => setAdminOtp(e.target.value)}
-                  required
-                />
-              </div>
-            )}
-            {adminOtpMessage && <p className="text-sm text-emerald-700 bg-emerald-50 p-3 rounded-lg border border-emerald-100">{adminOtpMessage}</p>}
+            {/* Admin non-SMS OTP removed; admins will receive SMS OTP after signing in */}
           </div>
         )}
 
@@ -364,6 +333,8 @@ function Login({ setIsRegisteringState }) {
               <input
                 type="text"
                 inputMode="numeric"
+                autoComplete="one-time-code"
+                pattern="[0-9]*"
                 placeholder="Enter 6-digit OTP"
                 className="w-full p-3 border rounded-lg text-lg text-center"
                 value={otpCode}
