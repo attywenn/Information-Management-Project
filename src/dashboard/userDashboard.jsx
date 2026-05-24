@@ -3387,7 +3387,7 @@ function UserDashboard() {
                                 <div>
                                     <label className={`block text-sm font-semibold mb-1 ${mutedClass}`}>OTP</label>
                                     <input
-                                        type="text"
+                                        type="password"
                                         inputMode="numeric"
                                         autoComplete="one-time-code"
                                         pattern="[0-9]*"
