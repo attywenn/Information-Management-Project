@@ -1894,37 +1894,55 @@ export async function deletePatientAccountByAdmin(payload) {
   }
 }
 
-export async function initiateOtpForCurrentSession() {
+export async function initiateOtpForCurrentSession({ adminPhone = null, phone = null, purpose = "auth" } = {}) {
   const { data: sessionData } = await supabase.auth.getSession();
   const token = sessionData?.session?.access_token;
   if (!token) throw new Error("No active session. Cannot initiate OTP.");
 
-  // Temporary local mock: bypass SMS OTP trigger
-  return { success: true, message: "OTP sent." };
+  const { data, error } = await supabase.functions.invoke("auth-otp", {
+    body: { action: "initiate", purpose, adminPhone, phone },
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (error) {
+    throw await toFunctionInvokeError(error, "Unable to initiate OTP.");
+  }
+
+  return data;
 }
 
-export async function verifyOtpForCurrentSession(options = {}) {
-  const { code } = options;
+export async function verifyOtpForCurrentSession({ code, purpose = "auth" } = {}) {
   const { data: sessionData } = await supabase.auth.getSession();
   const token = sessionData?.session?.access_token;
   if (!token) throw new Error("No active session. Cannot verify OTP.");
 
-  // Temporary local mock: check for fixed code '907025'
-  const normalizedOtp = code.replace(/\D/g, "").trim();
-  if (normalizedOtp === "907025") {
-    return { success: true };
-  } else {
-    throw new Error("Invalid OTP code.");
+  const { data, error } = await supabase.functions.invoke("auth-otp", {
+    body: { action: "verify", code, purpose },
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (error) {
+    throw await toFunctionInvokeError(error, "Unable to verify OTP.");
   }
+
+  return data;
 }
 
-export async function initiatePhoneChangeOtpForCurrentSession() {
+export async function initiatePhoneChangeOtpForCurrentSession({ newPhone = "" } = {}) {
   const { data: sessionData } = await supabase.auth.getSession();
   const token = sessionData?.session?.access_token;
   if (!token) throw new Error("No active session. Cannot initiate phone change OTP.");
 
-  // Temporary local mock: bypass SMS OTP trigger
-  return { success: true, message: "OTP sent." };
+  const { data, error } = await supabase.functions.invoke("auth-otp", {
+    body: { action: "initiate", purpose: "phone_change", newPhone },
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (error) {
+    throw await toFunctionInvokeError(error, "Unable to initiate phone change OTP.");
+  }
+
+  return data;
 }
 
 export async function verifyPhoneChangeForCurrentSession({ code, newPhone } = {}) {
@@ -1932,56 +1950,15 @@ export async function verifyPhoneChangeForCurrentSession({ code, newPhone } = {}
   const token = sessionData?.session?.access_token;
   if (!token) throw new Error("No active session. Cannot verify phone change OTP.");
 
-  // Temporary local mock: check for fixed code '907025'
-  const normalizedOtp = code.replace(/\D/g, "").trim();
-  if (normalizedOtp !== "907025") {
-    throw new Error("Invalid OTP code.");
+  const { data, error } = await supabase.functions.invoke("auth-otp", {
+    body: { action: "verify", code, purpose: "phone_change", newPhone },
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (error) {
+    throw await toFunctionInvokeError(error, "Unable to verify phone change OTP.");
   }
 
-  const { data: userData } = await supabase.auth.getUser();
-  if (!userData?.user?.id) {
-    throw new Error("Authenticated user session was not found.");
-  }
-
-  const userId = userData.user.id;
-  const now = new Date().toISOString();
-
-  // Retrieve user role from profiles
-  const { data: profileRow, error: profileError } = await supabase
-    .from("profiles")
-    .select("role")
-    .eq("id", userId)
-    .maybeSingle();
-
-  if (profileError) {
-    throw toBackendError(profileError, "Unable to query profile during phone change.");
-  }
-
-  if (profileRow?.role === "patient") {
-    // Client-side direct update to patient_profiles contact_number
-    const { error: patientError } = await supabase
-      .from("patient_profiles")
-      .update({
-        contact_number: newPhone,
-        updated_at: now,
-      })
-      .eq("user_id", userId);
-
-    if (patientError) {
-      throw toBackendError(patientError, "Phone update failed in patient profile.");
-    }
-  }
-
-  // Update profiles updated_at
-  const { error: updateError } = await supabase
-    .from("profiles")
-    .update({ updated_at: now })
-    .eq("id", userId);
-
-  if (updateError) {
-    throw toBackendError(updateError, "Failed to update profile timestamp.");
-  }
-
-  return { success: true };
+  return data;
 }
 

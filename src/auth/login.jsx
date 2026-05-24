@@ -331,7 +331,7 @@ function Login({ setIsRegisteringState }) {
             {otpError && <p className="text-sm text-red-600 mt-3">{otpError}</p>}
             <form onSubmit={handleVerifyOtp} className="mt-4 space-y-3">
               <input
-                type="password"
+                type="text"
                 inputMode="numeric"
                 autoComplete="one-time-code"
                 pattern="[0-9]*"
