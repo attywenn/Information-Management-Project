@@ -72,9 +72,11 @@ function Login({ setIsRegisteringState }) {
       setOtpError("");
       setOtpMessage("Sending OTP...");
 
+      const resolvedPhone = profile?.phone || profile?.contactNumber || "";
+
       try {
         await initiateOtpForCurrentSession({
-          phone: tempProfile?.contactNumber || tempProfile?.phone || "",
+          phone: resolvedPhone,
         });
         setOtpMessage("OTP sent. Check your phone and enter the code.");
       } catch (initErr) {

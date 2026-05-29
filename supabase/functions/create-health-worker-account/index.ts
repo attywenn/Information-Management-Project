@@ -17,6 +17,36 @@ const keyboardSpecialCharPattern = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]/;
 const keyboardAllowedPattern = /^[A-Za-z0-9!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?`~]+$/;
 const allowedSexOptions = ["Male", "Female", "Prefer not to say"];
 
+const normalizePhoneNumber = (value: string) => {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  if (raw.startsWith("+")) {
+    return raw;
+  }
+
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) {
+    return "";
+  }
+
+  if (digits.length === 11 && digits.startsWith("0")) {
+    return `+63${digits.slice(1)}`;
+  }
+
+  if (digits.length === 10 && digits.startsWith("9")) {
+    return `+63${digits}`;
+  }
+
+  if (digits.startsWith("63")) {
+    return `+${digits}`;
+  }
+
+  return `+${digits}`;
+};
+
 const jsonResponse = (status: number, payload: Record<string, unknown>) =>
   new Response(JSON.stringify(payload), {
     status,
@@ -145,6 +175,7 @@ Deno.serve(async (req: Request) => {
   const dob = String(body.dob || "").trim();
   const sex = String(body.sex || "").trim();
   const gender = String(body.gender || "").trim();
+  const phoneNumber = normalizePhoneNumber(String(body.phoneNumber || body.contactNumber || body.phone || ""));
   const securityQuestionId = Number(body.securityQuestionId);
   const securityAnswer = String(body.securityAnswer || "").trim();
 
@@ -158,6 +189,10 @@ Deno.serve(async (req: Request) => {
 
   if (Number.isNaN(new Date(dob).getTime())) {
     return jsonResponse(400, { error: "Invalid birthdate." });
+  }
+
+  if (!phoneNumber) {
+    return jsonResponse(400, { error: "Phone number is required." });
   }
 
   if (!Number.isInteger(securityQuestionId) || securityQuestionId <= 0) {
@@ -198,6 +233,8 @@ Deno.serve(async (req: Request) => {
     email,
     password,
     email_confirm: true,
+    phone: phoneNumber || undefined,
+    phone_confirm: Boolean(phoneNumber),
     app_metadata: { app_role: "health_worker" },
     user_metadata: {
       app_role: "health_worker",
@@ -209,6 +246,8 @@ Deno.serve(async (req: Request) => {
       dob,
       sex,
       gender,
+      phone: phoneNumber,
+      contact_number: phoneNumber,
       license_number: licenseNumber,
       security_question_id: securityQuestionId,
       security_answer: securityAnswer,
@@ -221,9 +260,26 @@ Deno.serve(async (req: Request) => {
     });
   }
 
+  if (phoneNumber && !createdUserData.user.phone) {
+    const { error: phoneUpdateError } = await adminClient.auth.admin.updateUserById(
+      createdUserData.user.id,
+      {
+        phone: phoneNumber,
+        phone_confirm: true,
+      }
+    );
+
+    if (phoneUpdateError) {
+      return jsonResponse(400, {
+        error: phoneUpdateError.message || "Unable to persist phone number for this account.",
+      });
+    }
+  }
+
   return jsonResponse(200, {
     userId: createdUserData.user.id,
     email,
+    phoneNumber,
     licenseNumber,
   });
 });

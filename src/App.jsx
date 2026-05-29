@@ -10,6 +10,7 @@ import Header from "./components/Header.jsx";
 import Navigation from "./components/Navigation.jsx";
 import UserDashboard from "./dashboard/userDashboard.jsx";
 import { supabase } from "./utils/supabase.js";
+import ChatbotWidget from "./components/ChatbotWidget.jsx";
 
 // Initialize avatars bucket on app start
 async function initializeAvatarsBucket() {
@@ -60,34 +61,37 @@ function AppContent() {
   }, []);
 
   return (
-    <Routes>
-      {[
-        "/dashboard",
-        "/schedules",
-        "/history",
-        "/consultation",
-        "/inventory",
-        "/faqs-dashboard",
-        "/inbox",
-        "/settings",
-        "/manage-accounts",
-        "/patient-accounts",
-        "/health-worker-accounts",
-      ].map((path) => (
-        <Route
-          key={path}
-          path={path}
-          element={
-            isLoggedIn ? (
-              <Dashboard />
-            ) : (
-              <Navigate to="/account" replace />
-            )
-          }
-        />
-      ))}
-      <Route path="*" element={isLoggedIn ? <Navigate to="/dashboard" replace /> : <Landing />} />
-    </Routes>
+    <>
+      <Routes>
+        {[
+          "/dashboard",
+          "/schedules",
+          "/history",
+          "/consultation",
+          "/inventory",
+          "/faqs-dashboard",
+          "/inbox",
+          "/settings",
+          "/manage-accounts",
+          "/patient-accounts",
+          "/health-worker-accounts",
+        ].map((path) => (
+          <Route
+            key={path}
+            path={path}
+            element={
+              isLoggedIn ? (
+                <Dashboard />
+              ) : (
+                <Navigate to="/account" replace />
+              )
+            }
+          />
+        ))}
+        <Route path="*" element={isLoggedIn ? <Navigate to="/dashboard" replace /> : <Landing />} />
+      </Routes>
+      <ChatbotWidget />
+    </>
   );
 }
 

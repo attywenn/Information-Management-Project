@@ -4,6 +4,7 @@ import {
   fetchHealthWorkerDirectory,
   fetchMedicinesDispensedByHealthWorker,
   fetchConsultationsByHealthWorker,
+  updateUserPhoneByAdmin,
 } from "../services/supabaseBackendService";
 
 export default function HealthWorkerAccountManagement() {
@@ -101,6 +102,10 @@ export default function HealthWorkerAccountManagement() {
     consultationsError?.message ||
     null;
 
+  const [isEditingPhone, setIsEditingPhone] = useState(false);
+  const [phoneInput, setPhoneInput] = useState("");
+  const [savingPhone, setSavingPhone] = useState(false);
+
   // Filter health workers based on search term
   const filteredWorkers = healthWorkers.filter((worker) => {
     const searchLower = searchTerm.toLowerCase();
@@ -197,7 +202,61 @@ export default function HealthWorkerAccountManagement() {
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-600">Phone</label>
-                    <p className="text-gray-800">{workerDetail.phone || workerDetail.email || "N/A"}</p>
+                    <div className="flex items-center gap-2">
+                      {!isEditingPhone ? (
+                        <>
+                          <p className="text-gray-800 mr-3">{workerDetail.phone || workerDetail.email || "N/A"}</p>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPhoneInput(workerDetail.phone || "");
+                              setIsEditingPhone(true);
+                            }}
+                            className="text-sm text-blue-600 hover:underline"
+                          >
+                            Edit
+                          </button>
+                        </>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={phoneInput}
+                            onChange={(e) => setPhoneInput(e.target.value)}
+                            className="px-2 py-1 border border-gray-300 rounded"
+                            placeholder="e.g. +639171234567"
+                          />
+                          <button
+                            type="button"
+                            disabled={savingPhone}
+                            onClick={async () => {
+                              try {
+                                setSavingPhone(true);
+                                const acctId = workerDetail.userId || workerDetail.user_id || workerDetail.id;
+                                await updateUserPhoneByAdmin({ userId: acctId, phone: phoneInput });
+                                // update local state to reflect change
+                                setSelectedWorker({ ...workerDetail, phone: phoneInput });
+                                setIsEditingPhone(false);
+                              } catch (err) {
+                                setError(err.message || "Failed to update phone.");
+                              } finally {
+                                setSavingPhone(false);
+                              }
+                            }}
+                            className="bg-blue-600 text-white px-3 py-1 rounded text-sm"
+                          >
+                            {savingPhone ? "Saving..." : "Save"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setIsEditingPhone(false)}
+                            className="text-sm text-gray-600 hover:underline"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <div>
                     <label className="block text-sm font-medium text-gray-600">Health Worker ID</label>

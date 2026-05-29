@@ -1861,6 +1861,40 @@ export async function changePatientPasswordByAdmin(payload) {
   }
 }
 
+export async function updateUserPhoneByAdmin({ userId, phone }) {
+  const normalizedPhone = normalizePhoneValue(phone || "");
+  if (!normalizedPhone) throw new Error("Phone number is required.");
+
+  try {
+    const { error } = await supabase.auth.admin.updateUserById(userId, {
+      phone: normalizedPhone,
+      phone_confirm: true,
+    });
+
+    if (error) {
+      throw toBackendError(error, "Failed to update user phone.");
+    }
+
+    // Log the action (best-effort)
+    try {
+      const adminUser = (await supabase.auth.getUser()).data?.user?.id || null;
+      await supabase.from("audit_logs").insert({
+        admin_id: adminUser,
+        target_user_id: userId,
+        action: "phone_updated",
+        details: { phone: normalizedPhone },
+        created_at: new Date().toISOString(),
+      });
+    } catch {
+      // ignore audit log failures
+    }
+
+    return { success: true, phone: normalizedPhone };
+  } catch (error) {
+    throw error instanceof Error ? error : new Error("Failed to update user phone.");
+  }
+}
+
 export async function deletePatientAccountByAdmin(payload) {
   const { patientUserId, reason = "" } = payload;
 

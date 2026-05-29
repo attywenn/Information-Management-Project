@@ -679,6 +679,7 @@ function UserDashboard() {
         email: "",
         password: "",
         confirmPassword: "",
+        phoneNumber: "",
         surname: "",
         firstname: "",
         middlename: "",
@@ -2053,6 +2054,7 @@ function UserDashboard() {
             const createdWorker = await createHealthWorkerAccountByAdmin({
                 email: manageForm.email.trim(),
                 password: manageForm.password,
+                phoneNumber: manageForm.phoneNumber.trim(),
                 surname: manageForm.surname.trim(),
                 firstname: manageForm.firstname.trim(),
                 middlename: manageForm.middlename.trim(),
@@ -2069,6 +2071,7 @@ function UserDashboard() {
                 role: "health_worker",
                 email: manageForm.email.trim(),
                 password: manageForm.password,
+                phoneNumber: manageForm.phoneNumber.trim(),
                 surname: manageForm.surname.trim(),
                 firstname: manageForm.firstname.trim(),
                 middlename: manageForm.middlename.trim(),
@@ -2098,6 +2101,7 @@ function UserDashboard() {
                 email: "",
                 password: "",
                 confirmPassword: "",
+                phoneNumber: "",
                 surname: "",
                 firstname: "",
                 middlename: "",
@@ -3479,6 +3483,20 @@ function UserDashboard() {
                                 required
                             />
                         </div>
+                        <div>
+                            <label className={labelClass} htmlFor="hw-phone">Phone Number</label>
+                            <input
+                                id="hw-phone"
+                                type="tel"
+                                className={inputClass}
+                                value={manageForm.phoneNumber}
+                                onChange={(e) =>
+                                    setManageForm((f) => ({ ...f, phoneNumber: e.target.value }))
+                                }
+                                required
+                                placeholder="Enter phone number"
+                            />
+                        </div>
                     </div>
 
                     <div>
@@ -3686,6 +3704,7 @@ function UserDashboard() {
                                             {account.surname || "N/A"}, {account.firstname || "N/A"}, {account.middlename || "N/A"}
                                         </p>
                                         <p className="text-xs text-slate-600">Email: {account.email || "N/A"}</p>
+                                        <p className="text-xs text-slate-600">Phone: {account.phoneNumber || "N/A"}</p>
                                         <p className="text-xs text-slate-600">Sex: {account.sex || "N/A"}</p>
                                         <p className="text-xs text-slate-600">Gender: {account.gender || "N/A"}</p>
                                         <p className="text-xs font-bold text-brand-red mt-1">License Number: {account.systemLicenseNumber || account.workerId || "N/A"}</p>

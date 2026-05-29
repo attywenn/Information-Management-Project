@@ -135,6 +135,7 @@ Deno.serve(async (req: Request) => {
 
     const requestedPhone = normalizePhoneToE164(String(body.phone || "").trim());
     let phone = "";
+    let authPhone = "";
 
     if (profile.role === "patient") {
       const { data: patientProfile } = await adminClient
@@ -145,7 +146,15 @@ Deno.serve(async (req: Request) => {
       const storedPatientPhone = normalizePhoneToE164(String(patientProfile?.contact_number || "").trim());
       phone = storedPatientPhone || requestedPhone;
     } else {
-      phone = requestedPhone || normalizePhoneToE164(String(requester.phone || "").trim());
+      // Try requested phone, then user_metadata fields (set during admin creation), then auth.users.phone
+      authPhone = normalizePhoneToE164(String(requester.phone || "").trim());
+      const metaPhone = normalizePhoneToE164(
+        String(
+          (requester.user_metadata && (requester.user_metadata.contact_number || requester.user_metadata.phone || requester.user_metadata.contactNumber)) || ""
+        ).trim()
+      );
+
+      phone = requestedPhone || metaPhone || authPhone;
     }
 
     // If admin and no phone, set provided admin phone (configurable by caller)
@@ -173,6 +182,17 @@ Deno.serve(async (req: Request) => {
     const normalizedPhone = normalizePhoneToE164(phone);
     if (!normalizedPhone || normalizedPhone === "+") {
       return jsonResponse(400, { error: "No valid phone number found for this account. Please update contact number." });
+    }
+
+    if (!authPhone && profile.role !== "patient") {
+      const { error: phoneUpdateError } = await adminClient.auth.admin.updateUserById(requester.id, {
+        phone: normalizedPhone,
+        phone_confirm: true,
+      });
+
+      if (phoneUpdateError) {
+        console.warn("Unable to persist phone for user", requester.id, phoneUpdateError);
+      }
     }
 
     const { error: insertError } = await adminClient
