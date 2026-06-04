@@ -1928,6 +1928,29 @@ export async function deletePatientAccountByAdmin(payload) {
   }
 }
 
+export async function sendMedicalCertificateToMyEmail({ consultationId = null } = {}) {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  if (!token) {
+    throw new Error("No active session. Cannot send medical certificate.");
+  }
+
+  const { data, error } = await supabase.functions.invoke("send-medical-certificate", {
+    body: {
+      consultationId: consultationId || null,
+    },
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (error) {
+    throw await toFunctionInvokeError(error, "Unable to send medical certificate.");
+  }
+
+  return data || { success: true };
+}
+
 export async function initiateOtpForCurrentSession({ adminPhone = null, phone = null, purpose = "auth" } = {}) {
   const { data: sessionData } = await supabase.auth.getSession();
   const token = sessionData?.session?.access_token;
@@ -1995,4 +2018,3 @@ export async function verifyPhoneChangeForCurrentSession({ code, newPhone } = {}
 
   return data;
 }
-

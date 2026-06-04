@@ -8,6 +8,7 @@ This repository now contains a normalized PostgreSQL backend for all roles (pati
 - Edge Function: `supabase/functions/create-health-worker-account/index.ts`
 - Edge Function: `supabase/functions/auth-otp/index.ts`
 - Edge Function: `supabase/functions/admin-cleanup-accounts/index.ts`
+- Edge Function: `supabase/functions/send-medical-certificate/index.ts`
 
 ## Database Design Summary
 
@@ -64,6 +65,8 @@ supabase secrets set SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
 supabase secrets set SUPABASE_ANON_KEY=YOUR_ANON_KEY
 supabase secrets set SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
 supabase secrets set SMS_API_KEY=YOUR_SMS_API_KEY
+supabase secrets set RESEND_API_KEY=YOUR_RESEND_API_KEY
+supabase secrets set RESEND_FROM_EMAIL=San Perfecto Health Center <no-reply@yourdomain.com>
 ```
 
 Deploy:
@@ -72,6 +75,7 @@ Deploy:
 supabase functions deploy create-health-worker-account
 supabase functions deploy auth-otp
 supabase functions deploy admin-cleanup-accounts
+supabase functions deploy send-medical-certificate
 ```
 
 ## Bootstrap Admin Account
@@ -90,6 +94,8 @@ Use these in your frontend `.env`:
 - `VITE_SUPABASE_URL`
 - `VITE_SUPABASE_PUBLISHABLE_DEFAULT_KEY`
 - `SMS_API_KEY` is required only inside Supabase Edge Function secrets, not the frontend.
+- `RESEND_API_KEY` is required only inside Supabase Edge Function secrets, not the frontend.
+- `RESEND_FROM_EMAIL` is optional and should be a verified sender for production.
 
 If using direct function calls from frontend, call:
 

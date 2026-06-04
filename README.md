@@ -54,9 +54,12 @@ supabase secrets set SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
 supabase secrets set SUPABASE_ANON_KEY=YOUR_ANON_KEY
 supabase secrets set SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
 supabase secrets set SMS_API_KEY=YOUR_SMS_API_KEY
+supabase secrets set RESEND_API_KEY=YOUR_RESEND_API_KEY
+supabase secrets set RESEND_FROM_EMAIL=San Perfecto Health Center <no-reply@yourdomain.com>
 supabase functions deploy create-health-worker-account
 supabase functions deploy auth-otp
 supabase functions deploy admin-cleanup-accounts
+supabase functions deploy send-medical-certificate
 ```
 
 ## Included Backend Features
