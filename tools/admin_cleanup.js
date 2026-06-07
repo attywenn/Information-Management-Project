@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createClient } from '@supabase/supabase-js';
+import process from 'node:process';
 
 // Usage: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY env vars, then run:
 // node tools/admin_cleanup.js --adminPhone=+639511614532 --confirm

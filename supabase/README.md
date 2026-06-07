@@ -9,6 +9,7 @@ This repository now contains a normalized PostgreSQL backend for all roles (pati
 - Edge Function: `supabase/functions/auth-otp/index.ts`
 - Edge Function: `supabase/functions/admin-cleanup-accounts/index.ts`
 - Edge Function: `supabase/functions/send-medical-certificate/index.ts`
+- Edge Function: `supabase/functions/send-support-report/index.ts`
 
 ## Database Design Summary
 
@@ -33,6 +34,9 @@ Key RPC functions:
 - `book_appointment`
 - `complete_consultation`
 - `create_inbox_message`
+- `get_support_chat_target`
+- `create_support_message`
+- `get_support_conversation_messages`
 
 ## Security
 
@@ -76,6 +80,7 @@ supabase functions deploy create-health-worker-account
 supabase functions deploy auth-otp
 supabase functions deploy admin-cleanup-accounts
 supabase functions deploy send-medical-certificate
+supabase functions deploy send-support-report
 ```
 
 ## Bootstrap Admin Account
@@ -96,12 +101,14 @@ Use these in your frontend `.env`:
 - `SMS_API_KEY` is required only inside Supabase Edge Function secrets, not the frontend.
 - `RESEND_API_KEY` is required only inside Supabase Edge Function secrets, not the frontend.
 - `RESEND_FROM_EMAIL` is optional and should be a verified sender for production.
+- `send-support-report` delivers escalations to `wnciplays@gmail.com` and stores them in the support thread.
 
 If using direct function calls from frontend, call:
 
 - `POST {VITE_SUPABASE_URL}/functions/v1/create-health-worker-account`
 - `POST {VITE_SUPABASE_URL}/functions/v1/auth-otp`
 - `POST {VITE_SUPABASE_URL}/functions/v1/admin-cleanup-accounts`
+- `POST {VITE_SUPABASE_URL}/functions/v1/send-support-report`
 
 with `Authorization: Bearer <access_token>` from logged-in admin.
 

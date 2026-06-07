@@ -31,6 +31,8 @@ import {
     getMyProfileBundle,
     fetchPatientAndHealthWorkerStats,
     deleteConsultationRecord,
+    createSupportConversationMessage,
+    fetchSupportConversationMessages,
     sendMedicalCertificateToMyEmail,
     initiatePhoneChangeOtpForCurrentSession,
     verifyPhoneChangeForCurrentSession,
@@ -213,11 +215,14 @@ const getVisibleInboxMessages = (messages, user) => {
         id: message.id,
         label: message.subject || "Notification",
         body: message.body || "",
+        messageType: message.message_type || "inbox",
         createdAt: message.created_at
             ? new Date(message.created_at).toLocaleString("en-PH")
             : "",
         qrValue: message.qr_value || message.qrValue || "",
         appointmentCode: message.appointment_id || message.appointmentCode || "",
+        conversationKey: message.conversation_key || message.conversationKey || "",
+        senderUserId: message.sender_user_id || message.senderUserId || "",
     }));
 };
 
@@ -711,6 +716,12 @@ function UserDashboard() {
     const [inboxMessages, setInboxMessages] = useState([]);
     const [adminInboxMessages, setAdminInboxMessages] = useState([]);
     const [activeInboxMessage, setActiveInboxMessage] = useState(null);
+    const [supportThreadMessages, setSupportThreadMessages] = useState([]);
+    const [supportThreadLoading, setSupportThreadLoading] = useState(false);
+    const [supportThreadSending, setSupportThreadSending] = useState(false);
+    const [supportThreadError, setSupportThreadError] = useState("");
+    const [supportThreadReply, setSupportThreadReply] = useState("");
+    const supportThreadChannelRef = useRef(null);
     const [qrModalAppointment, setQrModalAppointment] = useState(null);
     const [consultationScanValue, setConsultationScanValue] = useState("");
     const [consultationScannedPatientCode, setConsultationScannedPatientCode] = useState("");
@@ -911,15 +922,34 @@ function UserDashboard() {
             id: message.id,
             label: message.subject || "Notification",
             body: message.body || "",
+            messageType: message.message_type || "inbox",
             createdAt: message.created_at
                 ? new Date(message.created_at).toLocaleString("en-PH")
                 : "",
+            qrValue: message.qr_value || message.qrValue || "",
+            appointmentCode: message.appointment_id || message.appointmentCode || "",
+            conversationKey: message.conversation_key || message.conversationKey || "",
+            senderUserId: message.sender_user_id || message.senderUserId || "",
         }));
     }, [adminInboxMessages, user?.role]);
     const inboxItemsForActiveSelection = user?.role === "admin" ? visibleAdminInboxMessages : visibleInboxMessages;
     const activeVisibleInboxMessage = activeInboxMessage && inboxItemsForActiveSelection.some((message) => message.id === activeInboxMessage.id)
         ? activeInboxMessage
         : null;
+    const activeSupportConversationKey = activeVisibleInboxMessage?.messageType?.startsWith("support")
+        ? String(activeVisibleInboxMessage.conversationKey || "").trim()
+        : "";
+    const activeSupportThreadPartnerId = useMemo(() => {
+        if (!activeSupportConversationKey) {
+            return "";
+        }
+
+        const counterpartMessage = supportThreadMessages.find(
+            (message) => String(message.sender_user_id || "") !== String(user?.id || "")
+        );
+
+        return counterpartMessage?.sender_user_id || activeVisibleInboxMessage?.senderUserId || "";
+    }, [activeSupportConversationKey, activeVisibleInboxMessage?.senderUserId, supportThreadMessages, user?.id]);
     const staffConsultationHistory = useMemo(() => {
         if (user?.role !== "health_worker" && user?.role !== "admin") {
             return [];
@@ -1691,6 +1721,69 @@ function UserDashboard() {
         }
     }, [adminInboxQuery.data, adminInboxQuery.error, user?.role]);
 
+    useEffect(() => {
+        if (supportThreadChannelRef.current) {
+            void supabase.removeChannel(supportThreadChannelRef.current);
+            supportThreadChannelRef.current = null;
+        }
+
+        if (user?.role !== "admin" || !activeSupportConversationKey) {
+            setSupportThreadMessages([]);
+            setSupportThreadReply("");
+            setSupportThreadError("");
+            return undefined;
+        }
+
+        let ignore = false;
+
+        const loadSupportThread = async () => {
+            setSupportThreadLoading(true);
+            setSupportThreadError("");
+            try {
+                const rows = await fetchSupportConversationMessages(activeSupportConversationKey);
+                if (!ignore) {
+                    setSupportThreadMessages(rows || []);
+                }
+            } catch (error) {
+                if (!ignore) {
+                    setSupportThreadError(error?.message || "Unable to load support thread.");
+                }
+            } finally {
+                if (!ignore) {
+                    setSupportThreadLoading(false);
+                }
+            }
+        };
+
+        void loadSupportThread();
+
+        const channel = supabase
+            .channel(`admin-support-${activeSupportConversationKey}`)
+            .on(
+                "postgres_changes",
+                {
+                    event: "*",
+                    schema: "public",
+                    table: "messages",
+                    filter: `conversation_key=eq.${activeSupportConversationKey}`,
+                },
+                () => {
+                    void loadSupportThread();
+                }
+            )
+            .subscribe();
+
+        supportThreadChannelRef.current = channel;
+
+        return () => {
+            ignore = true;
+            void supabase.removeChannel(channel);
+            if (supportThreadChannelRef.current === channel) {
+                supportThreadChannelRef.current = null;
+            }
+        };
+    }, [activeSupportConversationKey, user?.role]);
+
     const getDefaultConsultationForm = (medicineId = "") => ({
         diagnosis: "",
         prescribedMedicines: [createConsultationMedicineItemDraft(medicineId)],
@@ -2194,6 +2287,41 @@ function UserDashboard() {
             setMedicalCertificateError(error?.message || "Unable to send medical certificate.");
         } finally {
             setMedicalCertificateLoading(false);
+        }
+    };
+
+    const handleSupportReplySubmit = async (event) => {
+        event.preventDefault();
+
+        const trimmed = String(supportThreadReply || "").trim();
+        if (!trimmed || !activeSupportConversationKey) {
+            return;
+        }
+
+        if (!activeSupportThreadPartnerId) {
+            setSupportThreadError("Unable to determine the conversation recipient.");
+            return;
+        }
+
+        setSupportThreadSending(true);
+        setSupportThreadError("");
+
+        try {
+            await createSupportConversationMessage({
+                recipientUserId: activeSupportThreadPartnerId,
+                subject: activeVisibleInboxMessage?.label || "JuanitoAI support reply",
+                body: trimmed,
+                messageType: "support_chat",
+                conversationKey: activeSupportConversationKey,
+            });
+
+            setSupportThreadReply("");
+            const rows = await fetchSupportConversationMessages(activeSupportConversationKey);
+            setSupportThreadMessages(rows || []);
+        } catch (error) {
+            setSupportThreadError(error?.message || "Unable to send support reply.");
+        } finally {
+            setSupportThreadSending(false);
         }
     };
 
@@ -5816,6 +5944,64 @@ function UserDashboard() {
                             </button>
                         </div>
                         <p className="text-slate-700 leading-7 whitespace-pre-wrap">{activeVisibleInboxMessage.body}</p>
+                        {activeSupportConversationKey ? (
+                            <section className="rounded-2xl border border-red-100 bg-red-50/60 p-4 space-y-3">
+                                <div className="flex items-start justify-between gap-3">
+                                    <div>
+                                        <h3 className="text-sm font-bold uppercase tracking-wide text-red-700">Live support thread</h3>
+                                        <p className="text-xs text-slate-600 mt-1">Realtime replies are synced through Supabase.</p>
+                                    </div>
+                                    {supportThreadLoading ? <span className="text-xs text-slate-500">Loading...</span> : null}
+                                </div>
+
+                                <div className="max-h-80 overflow-y-auto space-y-2 rounded-2xl border border-slate-200 bg-white p-3">
+                                    {supportThreadMessages.length === 0 ? (
+                                        <p className="text-sm text-slate-500">No thread messages yet.</p>
+                                    ) : (
+                                        supportThreadMessages.map((message) => {
+                                            const isAdminMessage = String(message.sender_user_id || "") === String(user?.id || "");
+                                            return (
+                                                <div
+                                                    key={message.id}
+                                                    className={`flex ${isAdminMessage ? "justify-end" : "justify-start"}`}
+                                                >
+                                                    <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${isAdminMessage
+                                                        ? "bg-red-600 text-white rounded-tr-none"
+                                                        : "bg-slate-100 text-slate-800 rounded-tl-none"
+                                                    }`}>
+                                                        <p className="text-[10px] font-semibold uppercase tracking-wider opacity-80 mb-1">
+                                                            {isAdminMessage ? "You" : message.sender_display_name || "Sender"}
+                                                        </p>
+                                                        {message.body}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })
+                                    )}
+                                </div>
+
+                                {supportThreadError ? <p className="text-xs font-medium text-red-600">{supportThreadError}</p> : null}
+
+                                <form onSubmit={handleSupportReplySubmit} className="space-y-2">
+                                    <textarea
+                                        value={supportThreadReply}
+                                        onChange={(event) => setSupportThreadReply(event.target.value)}
+                                        rows={3}
+                                        placeholder="Reply to this support thread..."
+                                        className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-red-500/20 resize-none"
+                                    />
+                                    <div className="flex items-center justify-end gap-2">
+                                        <button
+                                            type="submit"
+                                            disabled={supportThreadSending || !supportThreadReply.trim()}
+                                            className="rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
+                                        >
+                                            {supportThreadSending ? "Sending..." : "Send reply"}
+                                        </button>
+                                    </div>
+                                </form>
+                            </section>
+                        ) : null}
                         {activeVisibleInboxMessage.qrValue && (
                             <div className="flex flex-col items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-5">
                                 <QRCodeSVG value={activeVisibleInboxMessage.qrValue} size={200} includeMargin />

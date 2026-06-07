@@ -647,6 +647,88 @@ export async function fetchMyInboxMessages() {
   return data || [];
 }
 
+export async function fetchSupportChatTarget() {
+  const { data, error } = await supabase.rpc("get_support_chat_target");
+  if (error) {
+    throw toBackendError(error, "Unable to load support chat target.");
+  }
+
+  return data?.[0] || null;
+}
+
+export const buildSupportConversationKey = (senderUserId, recipientUserId) => {
+  const left = String(senderUserId || "").trim();
+  const right = String(recipientUserId || "").trim();
+  if (!left || !right) {
+    return "";
+  }
+
+  return `support:${[left, right].sort().join(":")}`;
+};
+
+export async function fetchSupportConversationMessages(conversationKey) {
+  const key = String(conversationKey || "").trim();
+  if (!key) {
+    return [];
+  }
+
+  const { data, error } = await supabase.rpc("get_support_conversation_messages", {
+    p_conversation_key: key,
+  });
+
+  if (error) {
+    throw toBackendError(error, "Unable to load support conversation messages.");
+  }
+
+  return data || [];
+}
+
+export async function createSupportConversationMessage({
+  recipientUserId,
+  subject,
+  body,
+  messageType = "support_chat",
+  conversationKey = null,
+} = {}) {
+  const { data, error } = await supabase.rpc("create_support_message", {
+    p_recipient_user_id: recipientUserId,
+    p_subject: subject,
+    p_body: body,
+    p_message_type: messageType,
+    p_conversation_key: conversationKey,
+  });
+
+  if (error) {
+    throw toBackendError(error, "Unable to send support message.");
+  }
+
+  return data;
+}
+
+export async function sendSupportProblemReport({ subject, body }) {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData?.session?.access_token;
+  if (!token) {
+    throw new Error("No active session. Cannot report support problem.");
+  }
+
+  const { data, error } = await supabase.functions.invoke("send-support-report", {
+    body: {
+      subject,
+      body,
+    },
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+  });
+
+  if (error) {
+    throw await toFunctionInvokeError(error, "Unable to submit support report.");
+  }
+
+  return data || { success: true };
+}
+
 export async function createHealthWorkerAccountByAdmin(payload) {
   const invokeCreateHealthWorker = async (accessToken) => {
     return supabase.functions.invoke("create-health-worker-account", {
